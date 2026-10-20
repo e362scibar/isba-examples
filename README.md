@@ -20,6 +20,14 @@ The original materials were prepared for the 2024 lecture and are now being refr
 - [tomography1.ipynb](./tomography1.ipynb)
 - [thyratron_grid_pca.ipynb](./thyratron_grid_pca.ipynb)
 - [thyratron_selfdischarge.ipynb](./thyratron_selfdischarge.ipynb)
+- [orbit_corr_rl.ipynb](./orbit_corr_rl.ipynb)
+
+## New 2026 Notebook
+
+- [orbit_corr_rl.ipynb](./orbit_corr_rl.ipynb): reinforcement learning example for two-corrector orbit correction.
+  - Implemented with NumPy/SciPy and Matplotlib.
+  - Does not require `gymnasium`, `stable-baselines3`, or `torch`.
+  - Includes a compact SAC-style training loop with replay, twin critics, adaptive entropy weight, and early stopping.
 
 ## Data and Auxiliary Files
 

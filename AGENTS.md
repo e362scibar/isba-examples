@@ -32,6 +32,7 @@ When asked to modernize content, focus on:
 - Prefer changes inside existing notebooks unless the user requests new files.
 - Keep data files in [data/](./data/) unchanged unless updates are explicitly requested.
 - Do not delete original 2024 examples unless the user asks for removal.
+- Keep [orbit_corr_rl.ipynb](./orbit_corr_rl.ipynb) as the 2026 RL example and preserve its NumPy/SciPy-first dependency policy unless explicitly changed by the user.
 - Keep licensing and notice files intact:
   - [LICENSE.txt](./LICENSE.txt)
   - [NOTICE.txt](./NOTICE.txt)
@@ -55,6 +56,7 @@ When asked to modernize content, focus on:
 - Coding agents should primarily modify the paired `.py` files.
 - Add a license declaration comment at the beginning of each notebook (via the paired `.py` file header and synced `.ipynb` first cell/comment).
 - For newly created notebooks, follow the same license declaration style already used in the current `.ipynb` files.
+- For notebooks newly created in 2026 (including [orbit_corr_rl.ipynb](./orbit_corr_rl.ipynb)), use `Copyright (C) 2026 ...` in the notebook license declaration.
 - After modifying notebook content, sync pairs before finalizing changes.
 - Recommended command:
 
