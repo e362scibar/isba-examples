@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.19.3
+#       jupytext_version: 1.19.6
 #   kernelspec:
 #     display_name: isba
 #     language: python
@@ -57,6 +57,7 @@
 # 6. Training loop
 # 7. Evaluation: single seed, five seeds, and an example trajectory
 # 8. Discussion, limitations, and exercises
+# 9. Comparison with Bayesian optimization (Gaussian process)
 
 # %% [markdown]
 # ## Learning goals
@@ -68,6 +69,8 @@
 # - Describe the building blocks of SAC: replay buffer, twin critics, target critics, stochastic policy, and entropy weight.
 # - Read a minimal NumPy implementation of these blocks and identify where it simplifies the full algorithm.
 # - Evaluate a learned controller with success rate and error statistics, and recognize the limits of such evaluations.
+# - Contrast a trained RL policy with per-episode Bayesian optimization in terms of the information and the number of
+#   machine measurements each method needs.
 #
 # **Prerequisites:** linear transfer matrices in beam optics, basic linear algebra, and an introductory picture of RL
 # (agent, environment, reward).
@@ -83,12 +86,19 @@
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass
 from typing import Final
 
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.linalg
+import scipy.stats
+import sklearn
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
+
 
 def env_float(name: str, default: float) -> float:
     """Return float environment override or default."""
@@ -112,6 +122,7 @@ RNG = np.random.default_rng(SEED)
 
 print(f"NumPy: {np.__version__}")
 print(f"SciPy: {__import__('scipy').__version__}")
+print(f"scikit-learn: {sklearn.__version__}")
 print(f"Seed: {SEED}")
 
 # %% [markdown]
@@ -1452,3 +1463,271 @@ print("Final BPM readings after SAC [um]:", 1.0e6 * orbit_after[-2:])
 #    response-matrix baseline degrade? (Hint: the 1 µrad probe of the baseline becomes too small.)
 # 6. **Toward full SAC.** Make $\log\sigma$ learnable and add the entropy term to the actor gradient. Does the
 #    automatic $\alpha$ tuning then behave as intended?
+
+# %% [markdown]
+# ## 9. Comparison with Bayesian optimization (Gaussian process)
+#
+# A widely used alternative to RL for online accelerator tuning is **Bayesian optimization (BO)**. Instead of
+# learning a policy in advance, BO tunes each new situation from scratch: it treats the machine as a black-box function
+# of the knobs and chooses each new setting by balancing what it has already learned against what it has not
+# explored yet.
+#
+# ### 9.1 Problem setting
+#
+# For every episode (fixed but unknown $x_0$, $x'_0$, $k$) we minimize the scalar orbit objective
+# $$
+# f(\theta) = \left\|\frac{y(\theta)}{s_{\mathrm{bpm}}}\right\|_2^2
+# $$
+# over the kicks $\theta\in[-\theta_{\max},\theta_{\max}]^2$. Each evaluation of $f$ means setting the correctors and
+# reading the BPMs once, i.e. one **machine measurement**, which corresponds to one RL step. BO starts from the reading
+# at $\theta=0$, which all methods get for free at reset, and stops as soon as an evaluated setting satisfies
+# $\max\lvert x_{\mathrm{BPM}}\rvert<10$ µm, or after `MAX_STEPS` evaluations.
+#
+# ### 9.2 Gaussian-process surrogate
+#
+# Given evaluated points $X=\{\theta_i\}$ with values $F=\{f_i\}$, a Gaussian process with kernel $K$ gives the
+# posterior mean and variance at a new point $\theta$:
+# $$
+# \mu(\theta) = k_\theta^T\left(K + \sigma_n^2 I\right)^{-1}F,\qquad
+# \sigma^2(\theta) = K(\theta,\theta) - k_\theta^T\left(K + \sigma_n^2 I\right)^{-1}k_\theta,
+# $$
+# where $k_\theta = (K(\theta,\theta_i))_i$. We use scikit-learn's `GaussianProcessRegressor` with the kernel
+# $$
+# K(\theta,\theta') = c\,\exp\left(-\frac{\|\theta-\theta'\|^2}{2\ell^2}\right) + \sigma_n^2\,\delta_{\theta\theta'},
+# $$
+# i.e. `ConstantKernel * RBF + WhiteKernel`, on kicks normalized by $\theta_{\max}$. The hyperparameters $c$, $\ell$, and
+# $\sigma_n$ are refitted by maximum marginal likelihood after every new measurement.
+#
+# ### 9.3 Acquisition function: Expected Improvement
+#
+# The next setting maximizes the **Expected Improvement** over the best value so far, $f^\ast=\min_i f_i$:
+# $$
+# \mathrm{EI}(\theta) = \left(f^\ast-\mu(\theta)\right)\Phi(z) + \sigma(\theta)\,\phi(z),\qquad
+# z = \frac{f^\ast-\mu(\theta)}{\sigma(\theta)},
+# $$
+# where $\Phi$ and $\phi$ are the standard normal CDF and PDF. The first term favors points predicted to be good
+# (*exploitation*), and the second favors uncertain points (*exploration*). We maximize EI over random candidates
+# spread over the whole box, plus candidates concentrated around the current best point. The latter are needed to
+# reach the micrometre-level target.
+#
+# ### 9.4 What each method uses
+#
+# | Method | Information per measurement | Prior training | Step limit $\Delta\theta_{\max}$ |
+# |---|---|---|---|
+# | Response matrix (Section 4) | Both BPM readings (vector) | None, but assumes a linear model | Not applied |
+# | RL policy (Sections 5–7) | Both BPM readings plus history | Thousands of simulated steps | Applied |
+# | Bayesian optimization | Scalar $f(\theta)$ only | None | Not applied (BO may jump anywhere in the box) |
+#
+# The comparison is therefore not a contest on equal terms. It shows how prior knowledge (a model, or a policy
+# trained in simulation) and the richness of each measurement trade off against the number of measurements needed
+# on the machine.
+
+# %%
+BO_EPISODES: Final = env_int("BO_EPISODES", 60)
+BO_RANDOM_CANDIDATES: Final = 2_000
+BO_LOCAL_CANDIDATES: Final = 2_000
+BO_LOCAL_SCALE: Final = 0.02
+BO_GP_RESTARTS: Final = 1
+BO_EI_STD_FLOOR: Final = 1.0e-12
+COMPARISON_SEED: Final = SEED + 70_000
+RESPONSE_MATRIX_MEASUREMENTS: Final = 5  # four probe readings plus one reading after the correction
+
+
+@dataclass(frozen=True)
+class CorrectionTrace:
+    """Max BPM error after each machine measurement of one episode, and whether the target was reached."""
+
+    max_errors: np.ndarray
+    is_success: bool
+
+    @property
+    def measurements(self) -> int:
+        return int(self.max_errors.size)
+
+
+def orbit_objective(simulator: BeamlineSimulator, kicks: np.ndarray) -> float:
+    """Return the squared normalized BPM error for the given kicks."""
+    normalized = simulator.bpm_readings(kicks) / BPM_SCALE
+    return float(np.dot(normalized, normalized))
+
+
+def expected_improvement(mean: np.ndarray, std: np.ndarray, best_value: float) -> np.ndarray:
+    """Return Expected Improvement for minimization."""
+    improvement = best_value - mean
+    safe_std = np.maximum(std, BO_EI_STD_FLOOR)
+    z_score = improvement / safe_std
+    return improvement * scipy.stats.norm.cdf(z_score) + safe_std * scipy.stats.norm.pdf(z_score)
+
+
+def bayesian_optimization_episode(simulator: BeamlineSimulator, rng: np.random.Generator) -> CorrectionTrace:
+    """Minimize the orbit objective for one episode with GP-based Bayesian optimization."""
+    kernel = ConstantKernel(1.0, (1.0e-3, 1.0e3)) * RBF(0.5, (1.0e-2, 10.0)) + WhiteKernel(1.0e-6, (1.0e-10, 1.0e-2))
+    normalized_points = [np.zeros(2, dtype=np.float64)]
+    values = [orbit_objective(simulator, np.zeros(2, dtype=np.float64))]
+    max_errors: list[float] = []
+    for _ in range(MAX_STEPS):
+        gaussian_process = GaussianProcessRegressor(
+            kernel=kernel,
+            normalize_y=True,
+            n_restarts_optimizer=BO_GP_RESTARTS,
+            random_state=int(rng.integers(2**31 - 1)),
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConvergenceWarning)
+            gaussian_process.fit(np.asarray(normalized_points), np.asarray(values))
+        best_point = normalized_points[int(np.argmin(values))]
+        global_candidates = rng.uniform(-1.0, 1.0, size=(BO_RANDOM_CANDIDATES, 2))
+        local_candidates = best_point + BO_LOCAL_SCALE * rng.standard_normal((BO_LOCAL_CANDIDATES, 2))
+        candidates = np.clip(np.vstack([global_candidates, local_candidates]), -1.0, 1.0)
+        mean, std = gaussian_process.predict(candidates, return_std=True)
+        next_point = candidates[int(np.argmax(expected_improvement(mean, std, min(values))))]
+        kicks = MAX_KICK * next_point
+        normalized_points.append(next_point)
+        values.append(orbit_objective(simulator, kicks))
+        max_errors.append(float(np.max(np.abs(simulator.bpm_readings(kicks)))))
+        if max_errors[-1] < TARGET_TOLERANCE:
+            return CorrectionTrace(max_errors=np.asarray(max_errors), is_success=True)
+    return CorrectionTrace(max_errors=np.asarray(max_errors), is_success=False)
+
+
+def rl_policy_episode(environment: TwoCorrectorOrbitEnv, policy: GaussianPolicy, state: np.ndarray) -> CorrectionTrace:
+    """Run the deterministic RL policy from the given reset state and record the error after each step."""
+    max_errors: list[float] = []
+    done = False
+    info = {"is_success": False}
+    while not done:
+        state, _, done, info = environment.step(policy.deterministic_action(state))
+        max_errors.append(info["max_abs_reading"])
+    return CorrectionTrace(max_errors=np.asarray(max_errors), is_success=bool(info["is_success"]))
+
+
+def response_matrix_episode(environment: TwoCorrectorOrbitEnv) -> CorrectionTrace:
+    """Apply the one-shot response-matrix correction; probe readings are counted as measurements."""
+    before, after = response_matrix_correction(environment)
+    max_errors = np.full(RESPONSE_MATRIX_MEASUREMENTS, float(np.max(np.abs(before))))
+    max_errors[-1] = float(np.max(np.abs(after)))
+    return CorrectionTrace(max_errors=max_errors, is_success=bool(max_errors[-1] < TARGET_TOLERANCE))
+
+
+# %% [markdown]
+# ### 9.5 Running the comparison
+#
+# All three methods use environments created with the same seed, so they see identical sequences of hidden
+# parameters $(x_0, x'_0, k)$. The number of BO episodes can be changed with the environment variable `BO_EPISODES`;
+# each BO episode refits a GP up to 35 times and takes a fraction of a second.
+
+# %%
+comparison_rng = np.random.default_rng(COMPARISON_SEED)
+comparison_environments = {
+    "Response matrix": TwoCorrectorOrbitEnv(LATTICE, rng_seed=COMPARISON_SEED),
+    "RL policy (SAC)": TwoCorrectorOrbitEnv(LATTICE, rng_seed=COMPARISON_SEED),
+    "Bayesian optimization": TwoCorrectorOrbitEnv(LATTICE, rng_seed=COMPARISON_SEED),
+}
+comparison_traces: dict[str, list[CorrectionTrace]] = {name: [] for name in comparison_environments}
+
+for _ in range(BO_EPISODES):
+    comparison_environments["Response matrix"].reset()
+    comparison_traces["Response matrix"].append(response_matrix_episode(comparison_environments["Response matrix"]))
+
+    rl_environment = comparison_environments["RL policy (SAC)"]
+    rl_state = rl_environment.reset()
+    comparison_traces["RL policy (SAC)"].append(rl_policy_episode(rl_environment, policy, rl_state))
+
+    bo_environment = comparison_environments["Bayesian optimization"]
+    bo_environment.reset()
+    comparison_traces["Bayesian optimization"].append(
+        bayesian_optimization_episode(bo_environment.simulator, comparison_rng)
+    )
+
+print(f"Comparison over {BO_EPISODES} identical episodes:")
+for name, traces in comparison_traces.items():
+    successes = np.asarray([trace.is_success for trace in traces])
+    measurements = np.asarray([trace.measurements for trace in traces])
+    final_errors_um = 1.0e6 * np.asarray([trace.max_errors[-1] for trace in traces])
+    mean_successful = float(np.mean(measurements[successes])) if np.any(successes) else float("nan")
+    print(
+        f"  {name:22s}:",
+        f"success={100.0 * np.mean(successes):5.1f}%,",
+        f"mean measurements (successful)={mean_successful:5.2f},",
+        f"median final error={np.median(final_errors_um):7.2f} um",
+    )
+
+# %% [markdown]
+# ### 9.6 Convergence and measurement count
+#
+# The left panel shows the median over episodes of the best $\max\lvert x_{\mathrm{BPM}}\rvert$ reached so far
+# versus the number of machine measurements (the bands span the 25th to 75th percentiles). The RL policy and BO
+# continue only until success, so a finished episode keeps its final value. The response-matrix method
+# reaches the target after its fifth measurement; its residual (about $10^{-10}$ µm, numerical round-off) lies below
+# the plotted range and is drawn at the lower edge of the panel. The right panel shows the distribution of the number
+# of measurements needed for success.
+
+# %%
+def best_so_far_matrix(traces: list[CorrectionTrace], length: int) -> np.ndarray:
+    """Return best-so-far max BPM error per measurement, padded with the final value after termination."""
+    matrix = np.empty((len(traces), length), dtype=np.float64)
+    for row, trace in enumerate(traces):
+        running_best = np.minimum.accumulate(trace.max_errors)
+        matrix[row, : running_best.size] = running_best[:length]
+        matrix[row, running_best.size :] = running_best[-1]
+    return matrix
+
+
+QUARTILES: Final = (25.0, 50.0, 75.0)
+CONVERGENCE_PLOT_FLOOR_UM: Final = 0.1
+measurement_axis = np.arange(1, MAX_STEPS + 1)
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+for name, traces in comparison_traces.items():
+    best_so_far_um = np.maximum(1.0e6 * best_so_far_matrix(traces, MAX_STEPS), CONVERGENCE_PLOT_FLOOR_UM)
+    lower, median, upper = np.percentile(best_so_far_um, QUARTILES, axis=0)
+    line = axes[0].plot(measurement_axis, median, marker=".", label=name)[0]
+    axes[0].fill_between(measurement_axis, lower, upper, color=line.get_color(), alpha=0.2)
+axes[0].axhline(1.0e6 * TARGET_TOLERANCE, color="black", linestyle="--", linewidth=1.0, label="Success threshold")
+axes[0].set_yscale("log")
+axes[0].set_ylim(bottom=0.5 * CONVERGENCE_PLOT_FLOOR_UM)
+axes[0].set(
+    xlabel="Machine measurements",
+    ylabel="Best max BPM error so far [um]",
+    title="Convergence (median and interquartile range)",
+)
+axes[0].legend()
+
+measurement_bins = np.arange(0.5, MAX_STEPS + 1.5, 1.0)
+largest_successful_count = 1
+for name, traces in comparison_traces.items():
+    successful_counts = [trace.measurements for trace in traces if trace.is_success]
+    axes[1].hist(successful_counts, bins=measurement_bins, alpha=0.6, label=name)
+    largest_successful_count = max([largest_successful_count, *successful_counts])
+axes[1].set_xlim(0.5, largest_successful_count + 1.5)
+axes[1].set(
+    xlabel="Measurements to success",
+    ylabel="Episodes",
+    title="Measurements needed for success",
+)
+axes[1].legend()
+fig.tight_layout()
+
+# %% [markdown]
+# ### 9.7 Discussion
+#
+# - **Response matrix:** with a linear, noiseless model and vector BPM readings, a few probe measurements determine
+#   the correction exactly. This is the most efficient method whenever its model assumptions hold.
+# - **RL policy:** after training, the policy corrects a new episode in a few steps without probing, because the
+#   correction strategy is *amortized*: its cost was paid in advance by thousands of simulated training steps. It
+#   is also the only method here limited to small kick increments, which mainly sets its number of steps.
+# - **Bayesian optimization:** BO needs no model and no training, and it sees only a scalar objective. It must
+#   discover the two-dimensional structure of $f(\theta)$ from scratch in every episode, so it needs many more
+#   measurements than the other methods, and some episodes may not reach the micrometre-level target within
+#   the budget. In return, it extends naturally to nonlinear objectives, noisy measurements, and
+#   knobs for which no model or simulator exists.
+#
+# In practice these methods are complementary. For example, a policy or model provides a good starting point, and
+# BO fine-tunes it on the real machine. Here the BO objective is an analytic quadratic bowl; on a real machine the GP
+# noise term $\sigma_n$ becomes essential.
+#
+# **Exercises for this section.**
+#
+# 1. Replace Expected Improvement by the upper (lower) confidence bound $\mu(\theta)-\kappa\sigma(\theta)$ and vary $\kappa$.
+# 2. Add BPM noise and observe how the fitted `WhiteKernel` level and the BO convergence change.
+# 3. Give BO the same step limit as RL by restricting candidates to $\lvert\theta-\theta_{\mathrm{last}}\rvert\le\Delta\theta_{\max}$.
+# 4. Start BO from the kicks proposed by one RL step instead of $\theta=0$ (warm-started BO).
