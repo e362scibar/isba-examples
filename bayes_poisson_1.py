@@ -8,7 +8,7 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.19.3
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: isba
 #     language: python
 #     name: python3
 # ---
@@ -24,13 +24,13 @@
 #
 # You should have received a copy of the GNU General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-# %% id="dm_FsRzB7OG3" executionInfo={"status": "ok", "timestamp": 1792388176436, "user_tz": -540, "elapsed": 16, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}}
+# %% executionInfo={"elapsed": 16, "status": "ok", "timestamp": 1792388176436, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}, "user_tz": -540} id="dm_FsRzB7OG3"
 import numpy as np
 import scipy
 import matplotlib.pyplot as plt
 # %matplotlib inline
 
-# %% id="Z6m5Ta0s7OG4" executionInfo={"status": "ok", "timestamp": 1792388176442, "user_tz": -540, "elapsed": 1, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}}
+# %% executionInfo={"elapsed": 1, "status": "ok", "timestamp": 1792388176442, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}, "user_tz": -540} id="Z6m5Ta0s7OG4"
 # Parameters
 mu = 2.0
 alpha = 1.0
@@ -43,10 +43,10 @@ plt.rcParams['font.size'] = 16
 # P(k;\lambda) = \frac{\lambda^{k} e^{-\lambda}}{k!}
 # $$
 
-# %% id="6gRn4PTR7OG5" executionInfo={"status": "ok", "timestamp": 1792388177136, "user_tz": -540, "elapsed": 694, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}}
+# %% executionInfo={"elapsed": 694, "status": "ok", "timestamp": 1792388177136, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}, "user_tz": -540} id="6gRn4PTR7OG5"
 poisson = scipy.stats.poisson(mu)
 
-# %% colab={"base_uri": "https://localhost:8080/", "height": 532} id="bOcpswlD7OG5" executionInfo={"status": "ok", "timestamp": 1792388177605, "user_tz": -540, "elapsed": 470, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}} outputId="023b258c-c48e-4f2f-880c-57f5e14d1cd8"
+# %% colab={"base_uri": "https://localhost:8080/", "height": 532} executionInfo={"elapsed": 470, "status": "ok", "timestamp": 1792388177605, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}, "user_tz": -540} id="bOcpswlD7OG5" outputId="023b258c-c48e-4f2f-880c-57f5e14d1cd8"
 
 # Probability distribution
 fig, ax = plt.subplots()
@@ -65,7 +65,7 @@ plt.show()
 # $$
 # - Conjugate prior of Poisson distribution
 
-# %% colab={"base_uri": "https://localhost:8080/", "height": 436} id="YaY7fDMU7OG6" executionInfo={"status": "ok", "timestamp": 1792388177756, "user_tz": -540, "elapsed": 150, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}} outputId="3e287312-d64e-4168-abff-69b7534cc8cf"
+# %% colab={"base_uri": "https://localhost:8080/", "height": 436} executionInfo={"elapsed": 150, "status": "ok", "timestamp": 1792388177756, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}, "user_tz": -540} id="YaY7fDMU7OG6" outputId="3e287312-d64e-4168-abff-69b7534cc8cf"
 # Gamma distribution
 gamma1 = scipy.stats.gamma(alpha, scale=1./beta)
 fig, ax = plt.subplots()
@@ -77,7 +77,7 @@ plt.show()
 # %% [markdown] id="AcFJggb17OG6"
 # ## Random sampling of Poisson distribution
 
-# %% colab={"base_uri": "https://localhost:8080/", "height": 464} id="kUVOWjpg7OG7" executionInfo={"status": "ok", "timestamp": 1792388177927, "user_tz": -540, "elapsed": 171, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}} outputId="c261935c-95fa-40f4-e90d-365af79dd69b"
+# %% colab={"base_uri": "https://localhost:8080/", "height": 464} executionInfo={"elapsed": 171, "status": "ok", "timestamp": 1792388177927, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}, "user_tz": -540} id="kUVOWjpg7OG7" outputId="c261935c-95fa-40f4-e90d-365af79dd69b"
 # sample n data points
 n = 10
 dat = poisson.rvs(size=n)
@@ -97,7 +97,7 @@ plt.show()
 # = f\left( \lambda ; \alpha+\sum_{m=1}^{n}{k_m}, \beta+n \right)
 # $$
 
-# %% colab={"base_uri": "https://localhost:8080/", "height": 464} id="sYHMhe-g7OG7" executionInfo={"status": "ok", "timestamp": 1792388178175, "user_tz": -540, "elapsed": 226, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}} outputId="68d0c575-cc10-49c6-b5b5-e31c5f8fcdcb"
+# %% colab={"base_uri": "https://localhost:8080/", "height": 464} executionInfo={"elapsed": 226, "status": "ok", "timestamp": 1792388178175, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}, "user_tz": -540} id="sYHMhe-g7OG7" outputId="68d0c575-cc10-49c6-b5b5-e31c5f8fcdcb"
 # Gamma distribution
 gamma1 = scipy.stats.gamma(alpha, scale=1./beta)
 gamma2 = scipy.stats.gamma(alpha+np.sum(dat), scale=1./(beta+n))
@@ -111,7 +111,7 @@ ax.set_title('Gamma distribution')
 ax.set_ylabel('probability density')
 plt.show()
 
-# %% colab={"base_uri": "https://localhost:8080/", "height": 532} id="9_42x9U07OG7" executionInfo={"status": "ok", "timestamp": 1792388178565, "user_tz": -540, "elapsed": 391, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}} outputId="fa841960-c467-4736-b715-a9ed0d3b2af7"
+# %% colab={"base_uri": "https://localhost:8080/", "height": 532} executionInfo={"elapsed": 391, "status": "ok", "timestamp": 1792388178565, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}, "user_tz": -540} id="9_42x9U07OG7" outputId="fa841960-c467-4736-b715-a9ed0d3b2af7"
 # Posterior distribution
 x = np.arange(0, poisson.ppf(0.99)+1)
 pmf = poisson.pmf(x)
@@ -135,7 +135,7 @@ ax.set_ylabel('Probability')
 ax.legend()
 plt.show()
 
-# %% colab={"base_uri": "https://localhost:8080/", "height": 1000} id="Kx-N7Qgb7OG8" executionInfo={"status": "ok", "timestamp": 1792388181092, "user_tz": -540, "elapsed": 2525, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}} outputId="1fa52f6c-9c6d-4c5b-d39c-4fd51295a5c8"
+# %% colab={"base_uri": "https://localhost:8080/", "height": 1000} executionInfo={"elapsed": 2525, "status": "ok", "timestamp": 1792388181092, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}, "user_tz": -540} id="Kx-N7Qgb7OG8" outputId="1fa52f6c-9c6d-4c5b-d39c-4fd51295a5c8"
 # Posteriors
 t = np.linspace(0.001,0.999,999)
 for xx in x:
@@ -147,4 +147,4 @@ for xx in x:
     ax[1].plot(p,t)
     plt.show()
 
-# %% id="awnCX4Xl7OG8" executionInfo={"status": "ok", "timestamp": 1792388181129, "user_tz": -540, "elapsed": 36, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}}
+# %% executionInfo={"elapsed": 36, "status": "ok", "timestamp": 1792388181129, "user": {"displayName": "Hirokazu Maesaka", "userId": "11909388552187572989"}, "user_tz": -540} id="awnCX4Xl7OG8"
