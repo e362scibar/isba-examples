@@ -14,5 +14,6 @@ dependencies:
   - scikit-learn
   - jupytext
   - nbstripout
+  - jax
   - pip:
       - keras

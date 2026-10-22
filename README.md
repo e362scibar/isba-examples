@@ -21,13 +21,19 @@ The original materials were prepared for the 2024 lecture and are now being refr
 - [thyratron_grid_pca.ipynb](./thyratron_grid_pca.ipynb)
 - [thyratron_selfdischarge.ipynb](./thyratron_selfdischarge.ipynb)
 - [orbit_corr_rl.ipynb](./orbit_corr_rl.ipynb)
+- [diff_sim_1.ipynb](./diff_sim_1.ipynb)
 
-## New 2026 Notebook
+## New 2026 Notebooks
 
 - [orbit_corr_rl.ipynb](./orbit_corr_rl.ipynb): reinforcement learning example for two-corrector orbit correction.
   - Implemented with NumPy/SciPy and Matplotlib.
   - Does not require `gymnasium`, `stable-baselines3`, or `torch`.
   - Includes a compact SAC-style training loop with replay, twin critics, adaptive entropy weight, and early stopping.
+- [diff_sim_1.ipynb](./diff_sim_1.ipynb): differentiable-simulation example for Twiss (beam envelope) matching.
+  - Beamline of five drifts and four thin-lens quadrupoles, written as pure JAX functions.
+  - Matches the exit Twiss parameters from random but known entrance Twiss parameters by tuning the four quadrupole strengths.
+  - Uses `jax.grad`, `jax.jacfwd`, `jax.hessian`, `jax.vmap`, and `jax.jit` for multi-start Adam optimization, Newton refinement, and sensitivity analysis of the loss to entrance Twiss errors.
+  - Requires `jax` (preinstalled on Google Colaboratory; included in [environment.yml](./environment.yml) for local runs).
 
 ## Data and Auxiliary Files
 
