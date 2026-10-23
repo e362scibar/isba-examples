@@ -485,6 +485,7 @@ baseline_before, baseline_after = response_matrix_correction(baseline_env)
 print("Baseline before [mm]:", 1.0e3 * baseline_before)
 print("Baseline after [um]:", 1.0e6 * baseline_after)
 
+
 # %% [markdown]
 # ## 5. Actor-critic components in NumPy
 #
@@ -553,238 +554,228 @@ print("Baseline after [um]:", 1.0e6 * baseline_after)
 #    tens of micrometres. This is an example of building physical knowledge into the model structure
 #    (an *inductive bias*).
 #
-# ### 5.3 Warm start from the response-matrix oracle (behavior cloning)
+# ### 5.3 Warm start from the nominal-model orbit feedback
 #
-# Learning from scratch with such simple approximators is sample-inefficient. We therefore first collect
-# oracle pairs $(s_0, u^\ast)$ at the start of random episodes, with the unclipped normalized kick change
+# Learning from scratch with such simple approximators is sample-inefficient, and on a real machine an untrained
+# policy would also be unsafe. We therefore start from the controller an accelerator physicist would build first:
+# a fixed-gain orbit feedback derived from the **nominal response matrix** $R_0 = R(k_0)$ of the design optics,
+# here $k_0 = 0$. Requiring the pre-$\tanh$ actor output to equal the full correction $-R_0^{-1}y/\Delta\theta_{\max}$ gives
 # $$
-# u^\ast = -\frac{R^{-1}y_0}{\Delta\theta_{\max}},
+# W_0 = -\frac{s_{\mathrm{bpm}}}{\Delta\theta_{\max}}\,R_0^{-1}.
 # $$
-# and fit the actor's pre-$\tanh$ output, $W s_0 \approx u^\ast$, by ridge regression without intercept.
-# Fitting to the unclipped $u^\ast$ lets $\tanh$ saturate large corrections naturally, whereas fitting
-# $\operatorname{arctanh}$ of clipped actions would turn the many saturated samples into huge, distorted targets.
+# The $\tanh$ then saturates large corrections to the step limit, and the loop repeats the correction until the
+# orbit converges. In practice $R_0$ comes from the lattice model or from one response-matrix measurement on the
+# machine, so this warm start costs no RL interaction at all.
 #
-# This is *behavior cloning* (imitation learning); RL then fine-tunes the cloned policy. Since $R$ depends on the
-# hidden $k$, a single $W$ cannot reproduce the oracle exactly. Repeated application still converges, because the
-# closed-loop map $I + (\Delta\theta_{\max}/s_{\mathrm{bpm}})R(k)W$ is contracting over the whole $k$ range.
+# Since the actual $R(k)$ differs from $R_0$ in every episode, $W_0$ is not exact. The closed loop still converges,
+# because the map $I + (\Delta\theta_{\max}/s_{\mathrm{bpm}})R(k)W_0 = I - R(k)R_0^{-1}$ is contracting over the
+# whole $k$ range (its spectral radius stays below about 0.15).
+#
+# Starting RL from an existing classical controller is common in accelerator applications (compare imitation
+# learning from an existing feedback, or *residual* RL that learns only a correction on top of it): the machine is
+# safe from the first step, and RL only has to learn what the model misses. The question for the rest of the
+# notebook is therefore: **can RL improve on the nominal-model feedback?**
 #
 # ### 5.4 Evaluation helper
 #
 # `evaluate_policy_success` runs the actor without exploration noise on fresh episodes and returns the mean return,
 # the success rate, the median final $\max\lvert x_{\mathrm{BPM}}\rvert$, and the mean number of steps per episode.
 
-# %% [raw]
-# def critic_features(states: np.ndarray, actions: np.ndarray) -> np.ndarray:
-#     """Create polynomial features for linear Q approximators."""
-#     if actions.shape[1] != 2:
-#         raise ValueError("This implementation expects exactly two actions.")
-#     cross_terms = (states[:, :, None] * actions[:, None, :]).reshape(states.shape[0], -1)
-#     action_squares = actions**2
-#     state_squares = states**2
-#     return np.concatenate(
-#         [
-#             np.ones((states.shape[0], 1), dtype=np.float64),
-#             states,
-#             actions,
-#             cross_terms,
-#             action_squares,
-#             state_squares,
-#         ],
-#         axis=1,
-#     )
-#
-#
-# def critic_feature_dim(state_dim: int, action_dim: int) -> int:
-#     """Return feature size used by critic_features."""
-#     return 1 + state_dim + action_dim + state_dim * action_dim + action_dim + state_dim
-#
-#
-# @dataclass
-# class ReplayBuffer:
-#     """Fixed-size replay buffer for off-policy updates."""
-#
-#     states: np.ndarray
-#     actions: np.ndarray
-#     rewards: np.ndarray
-#     next_states: np.ndarray
-#     dones: np.ndarray
-#     size: int = 0
-#     pointer: int = 0
-#
-#     @classmethod
-#     def create(cls, capacity: int, state_dim: int, action_dim: int) -> "ReplayBuffer":
-#         return cls(
-#             states=np.zeros((capacity, state_dim), dtype=np.float64),
-#             actions=np.zeros((capacity, action_dim), dtype=np.float64),
-#             rewards=np.zeros(capacity, dtype=np.float64),
-#             next_states=np.zeros((capacity, state_dim), dtype=np.float64),
-#             dones=np.zeros(capacity, dtype=np.float64),
-#         )
-#
-#     @property
-#     def capacity(self) -> int:
-#         return self.states.shape[0]
-#
-#     def add(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool) -> None:
-#         self.states[self.pointer] = state
-#         self.actions[self.pointer] = action
-#         self.rewards[self.pointer] = reward
-#         self.next_states[self.pointer] = next_state
-#         self.dones[self.pointer] = float(done)
-#         self.pointer = (self.pointer + 1) % self.capacity
-#         self.size = min(self.size + 1, self.capacity)
-#
-#     def sample(self, batch_size: int, rng: np.random.Generator) -> tuple[np.ndarray, ...]:
-#         if self.size < batch_size:
-#             raise ValueError("Not enough samples in replay buffer.")
-#         indices = rng.integers(0, self.size, size=batch_size)
-#         return (
-#             self.states[indices],
-#             self.actions[indices],
-#             self.rewards[indices],
-#             self.next_states[indices],
-#             self.dones[indices],
-#         )
-#
-#
-# @dataclass
-# class LinearCritic:
-#     """Linear Q approximator fitted by regularized least squares on each batch."""
-#
-#     weights: np.ndarray
-#
-#     @classmethod
-#     def create(cls, feature_dim: int, rng: np.random.Generator) -> "LinearCritic":
-#         return cls(weights=0.01 * rng.standard_normal(feature_dim))
-#
-#     def predict(self, states: np.ndarray, actions: np.ndarray) -> np.ndarray:
-#         features = critic_features(states, actions)
-#         return features @ self.weights
-#
-#     def action_gradient(self, states: np.ndarray, actions: np.ndarray) -> np.ndarray:
-#         """Return dQ/da for each state-action pair."""
-#         state_dim = states.shape[1]
-#         action_dim = actions.shape[1]
-#         if action_dim != 2:
-#             raise ValueError("This implementation expects exactly two actions.")
-#
-#         action_start = 1 + state_dim
-#         cross_start = action_start + action_dim
-#         action_square_start = cross_start + state_dim * action_dim
-#
-#         gradients = np.zeros_like(actions)
-#         for action_index in range(action_dim):
-#             gradients[:, action_index] += self.weights[action_start + action_index]
-#             cross_weights = self.weights[cross_start + action_index : cross_start + state_dim * action_dim : action_dim]
-#             gradients[:, action_index] += states @ cross_weights
-#             gradients[:, action_index] += 2.0 * self.weights[action_square_start + action_index] * actions[:, action_index]
-#         return gradients
-#
-#     def fit_batch(self, states: np.ndarray, actions: np.ndarray, targets: np.ndarray, ridge: float, mix: float) -> None:
-#         features = critic_features(states, actions)
-#         gram = features.T @ features
-#         regularized = gram + ridge * np.eye(gram.shape[0], dtype=np.float64)
-#         rhs = features.T @ targets
-#         solved = scipy.linalg.solve(regularized, rhs, assume_a="pos")
-#         self.weights = (1.0 - mix) * self.weights + mix * solved
-#
-#
-# @dataclass
-# class LinearPolicy:
-#     """Deterministic bias-free linear actor a = tanh(W s)."""
-#
-#     weight: np.ndarray
-#
-#     def actions(self, states: np.ndarray) -> np.ndarray:
-#         """Return actions for a batch of states."""
-#         return np.tanh(states @ self.weight.T)
-#
-#     def action(self, state: np.ndarray) -> np.ndarray:
-#         """Return the action for a single state."""
-#         return self.actions(state[None, :])[0]
-#
-#     def noisy_action(self, state: np.ndarray, noise_std: float, rng: np.random.Generator) -> np.ndarray:
-#         """Return an exploratory action with Gaussian noise added before the tanh."""
-#         pre_activation = self.weight @ state
-#         return np.tanh(pre_activation + noise_std * rng.standard_normal(pre_activation.shape))
-#
-#     def update(self, states: np.ndarray, action_gradient: np.ndarray, learning_rate: float) -> None:
-#         """Take one deterministic-policy-gradient ascent step."""
-#         actions = self.actions(states)
-#         weight_gradient = (action_gradient * (1.0 - actions**2)).T @ states / states.shape[0]
-#         self.weight = self.weight + learning_rate * weight_gradient
-#
-#     def copy(self) -> "LinearPolicy":
-#         return LinearPolicy(weight=self.weight.copy())
-#
-#
-# def build_oracle_dataset(
-#     lattice: Lattice,
-#     sample_count: int,
-#     rng_seed: int,
-# ) -> tuple[np.ndarray, np.ndarray]:
-#     """Build states and unclipped normalized kick changes from one-step response-matrix corrections."""
-#     environment = TwoCorrectorOrbitEnv(lattice, rng_seed=rng_seed)
-#     state_dim = environment.reset().shape[0]
-#     states = np.zeros((sample_count, state_dim), dtype=np.float64)
-#     kick_ratios = np.zeros((sample_count, 2), dtype=np.float64)
-#     for index in range(sample_count):
-#         state = environment.reset()
-#         before = environment.simulator.bpm_readings(environment.kicks)
-#         response = estimate_response_matrix(environment.simulator, environment.kicks)
-#         kick_change = np.linalg.solve(response, -before)
-#         states[index] = state
-#         kick_ratios[index] = kick_change / MAX_KICK_INCREMENT
-#     return states, kick_ratios
-#
-#
-# def fit_policy_to_oracle(states: np.ndarray, kick_ratios: np.ndarray, ridge: float) -> LinearPolicy:
-#     """Fit the actor's pre-tanh output to unclipped oracle kick ratios by ridge regression without intercept."""
-#     regularized = states.T @ states + ridge * np.eye(states.shape[1], dtype=np.float64)
-#     solved = scipy.linalg.solve(regularized, states.T @ kick_ratios, assume_a="pos")
-#     return LinearPolicy(weight=solved.T)
-#
-#
-# @dataclass(frozen=True)
-# class EvaluationSummary:
-#     """Aggregate noise-free policy metrics over evaluation episodes."""
-#
-#     mean_return: float
-#     success_rate: float
-#     median_error_um: float
-#     mean_steps: float
-#
-#
-# def evaluate_policy_success(
-#     policy: LinearPolicy,
-#     lattice: Lattice,
-#     rng_seed: int,
-#     episodes: int,
-# ) -> EvaluationSummary:
-#     """Return mean return, success rate, median final max BPM error [um], and mean episode length."""
-#     environment = TwoCorrectorOrbitEnv(lattice, rng_seed=rng_seed)
-#     returns: list[float] = []
-#     final_errors: list[float] = []
-#     episode_lengths: list[int] = []
-#     successes = 0
-#     for _ in range(episodes):
-#         state = environment.reset()
-#         done = False
-#         episode_return = 0.0
-#         info = {"is_success": False, "max_abs_reading": float("nan")}
-#         while not done:
-#             state, reward, done, info = environment.step(policy.action(state))
-#             episode_return += reward
-#         returns.append(episode_return)
-#         final_errors.append(info["max_abs_reading"])
-#         episode_lengths.append(environment.step_count)
-#         successes += int(info["is_success"])
-#     return EvaluationSummary(
-#         mean_return=float(np.mean(returns)),
-#         success_rate=100.0 * successes / episodes,
-#         median_error_um=1.0e6 * float(np.median(final_errors)),
-#         mean_steps=float(np.mean(episode_lengths)),
-#     )
+# %%
+def critic_features(states: np.ndarray, actions: np.ndarray) -> np.ndarray:
+    """Create polynomial features for linear Q approximators."""
+    if actions.shape[1] != 2:
+        raise ValueError("This implementation expects exactly two actions.")
+    cross_terms = (states[:, :, None] * actions[:, None, :]).reshape(states.shape[0], -1)
+    action_squares = actions**2
+    state_squares = states**2
+    return np.concatenate(
+        [
+            np.ones((states.shape[0], 1), dtype=np.float64),
+            states,
+            actions,
+            cross_terms,
+            action_squares,
+            state_squares,
+        ],
+        axis=1,
+    )
+
+
+def critic_feature_dim(state_dim: int, action_dim: int) -> int:
+    """Return feature size used by critic_features."""
+    return 1 + state_dim + action_dim + state_dim * action_dim + action_dim + state_dim
+
+
+@dataclass
+class ReplayBuffer:
+    """Fixed-size replay buffer for off-policy updates."""
+
+    states: np.ndarray
+    actions: np.ndarray
+    rewards: np.ndarray
+    next_states: np.ndarray
+    dones: np.ndarray
+    size: int = 0
+    pointer: int = 0
+
+    @classmethod
+    def create(cls, capacity: int, state_dim: int, action_dim: int) -> "ReplayBuffer":
+        return cls(
+            states=np.zeros((capacity, state_dim), dtype=np.float64),
+            actions=np.zeros((capacity, action_dim), dtype=np.float64),
+            rewards=np.zeros(capacity, dtype=np.float64),
+            next_states=np.zeros((capacity, state_dim), dtype=np.float64),
+            dones=np.zeros(capacity, dtype=np.float64),
+        )
+
+    @property
+    def capacity(self) -> int:
+        return self.states.shape[0]
+
+    def add(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool) -> None:
+        self.states[self.pointer] = state
+        self.actions[self.pointer] = action
+        self.rewards[self.pointer] = reward
+        self.next_states[self.pointer] = next_state
+        self.dones[self.pointer] = float(done)
+        self.pointer = (self.pointer + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+
+    def sample(self, batch_size: int, rng: np.random.Generator) -> tuple[np.ndarray, ...]:
+        if self.size < batch_size:
+            raise ValueError("Not enough samples in replay buffer.")
+        indices = rng.integers(0, self.size, size=batch_size)
+        return (
+            self.states[indices],
+            self.actions[indices],
+            self.rewards[indices],
+            self.next_states[indices],
+            self.dones[indices],
+        )
+
+
+@dataclass
+class LinearCritic:
+    """Linear Q approximator fitted by regularized least squares on each batch."""
+
+    weights: np.ndarray
+
+    @classmethod
+    def create(cls, feature_dim: int, rng: np.random.Generator) -> "LinearCritic":
+        return cls(weights=0.01 * rng.standard_normal(feature_dim))
+
+    def predict(self, states: np.ndarray, actions: np.ndarray) -> np.ndarray:
+        features = critic_features(states, actions)
+        return features @ self.weights
+
+    def action_gradient(self, states: np.ndarray, actions: np.ndarray) -> np.ndarray:
+        """Return dQ/da for each state-action pair."""
+        state_dim = states.shape[1]
+        action_dim = actions.shape[1]
+        if action_dim != 2:
+            raise ValueError("This implementation expects exactly two actions.")
+
+        action_start = 1 + state_dim
+        cross_start = action_start + action_dim
+        action_square_start = cross_start + state_dim * action_dim
+
+        gradients = np.zeros_like(actions)
+        for action_index in range(action_dim):
+            gradients[:, action_index] += self.weights[action_start + action_index]
+            cross_weights = self.weights[cross_start + action_index : cross_start + state_dim * action_dim : action_dim]
+            gradients[:, action_index] += states @ cross_weights
+            gradients[:, action_index] += 2.0 * self.weights[action_square_start + action_index] * actions[:, action_index]
+        return gradients
+
+    def fit_batch(self, states: np.ndarray, actions: np.ndarray, targets: np.ndarray, ridge: float, mix: float) -> None:
+        features = critic_features(states, actions)
+        gram = features.T @ features
+        regularized = gram + ridge * np.eye(gram.shape[0], dtype=np.float64)
+        rhs = features.T @ targets
+        solved = scipy.linalg.solve(regularized, rhs, assume_a="pos")
+        self.weights = (1.0 - mix) * self.weights + mix * solved
+
+
+@dataclass
+class LinearPolicy:
+    """Deterministic bias-free linear actor a = tanh(W s)."""
+
+    weight: np.ndarray
+
+    def actions(self, states: np.ndarray) -> np.ndarray:
+        """Return actions for a batch of states."""
+        return np.tanh(states @ self.weight.T)
+
+    def action(self, state: np.ndarray) -> np.ndarray:
+        """Return the action for a single state."""
+        return self.actions(state[None, :])[0]
+
+    def noisy_action(self, state: np.ndarray, noise_std: float, rng: np.random.Generator) -> np.ndarray:
+        """Return an exploratory action with Gaussian noise added before the tanh."""
+        pre_activation = self.weight @ state
+        return np.tanh(pre_activation + noise_std * rng.standard_normal(pre_activation.shape))
+
+    def update(self, states: np.ndarray, action_gradient: np.ndarray, learning_rate: float) -> None:
+        """Take one deterministic-policy-gradient ascent step."""
+        actions = self.actions(states)
+        weight_gradient = (action_gradient * (1.0 - actions**2)).T @ states / states.shape[0]
+        self.weight = self.weight + learning_rate * weight_gradient
+
+    def copy(self) -> "LinearPolicy":
+        return LinearPolicy(weight=self.weight.copy())
+
+
+NOMINAL_QUADRUPOLE_STRENGTH: Final = 0.0
+
+
+def nominal_feedback_policy(lattice: Lattice) -> LinearPolicy:
+    """Return the fixed-gain orbit feedback W0 = -(s_bpm / dtheta_max) R0^-1 of the nominal optics."""
+    nominal_response = analytic_response_matrix(NOMINAL_QUADRUPOLE_STRENGTH, lattice)
+    return LinearPolicy(weight=-(BPM_SCALE / MAX_KICK_INCREMENT) * np.linalg.inv(nominal_response))
+
+
+@dataclass(frozen=True)
+class EvaluationSummary:
+    """Aggregate noise-free policy metrics over evaluation episodes."""
+
+    mean_return: float
+    success_rate: float
+    median_error_um: float
+    mean_steps: float
+
+
+def evaluate_policy_success(
+    policy: LinearPolicy,
+    lattice: Lattice,
+    rng_seed: int,
+    episodes: int,
+) -> EvaluationSummary:
+    """Return mean return, success rate, median final max BPM error [um], and mean episode length."""
+    environment = TwoCorrectorOrbitEnv(lattice, rng_seed=rng_seed)
+    returns: list[float] = []
+    final_errors: list[float] = []
+    episode_lengths: list[int] = []
+    successes = 0
+    for _ in range(episodes):
+        state = environment.reset()
+        done = False
+        episode_return = 0.0
+        info = {"is_success": False, "max_abs_reading": float("nan")}
+        while not done:
+            state, reward, done, info = environment.step(policy.action(state))
+            episode_return += reward
+        returns.append(episode_return)
+        final_errors.append(info["max_abs_reading"])
+        episode_lengths.append(environment.step_count)
+        successes += int(info["is_success"])
+    return EvaluationSummary(
+        mean_return=float(np.mean(returns)),
+        success_rate=100.0 * successes / episodes,
+        median_error_um=1.0e6 * float(np.median(final_errors)),
+        mean_steps=float(np.mean(episode_lengths)),
+    )
+
 
 # %% [markdown]
 # ## 6. Training loop
@@ -793,7 +784,7 @@ print("Baseline after [um]:", 1.0e6 * baseline_after)
 # transition to the replay buffer, and the learners are updated from random mini-batches of past transitions.
 # The procedure is:
 #
-# 1. Warm-start the actor from the oracle dataset (Section 5.3).
+# 1. Warm-start the actor with the nominal-model feedback $W_0$ (Section 5.3).
 # 2. At every environment step:
 #    1. **Act.** Use uniformly random actions during the first `WARMUP_STEPS` steps to fill the buffer with diverse
 #       data; afterwards use the actor with exploration noise, $a = \tanh(Ws + \sigma\epsilon)$,
@@ -831,7 +822,7 @@ print("Baseline after [um]:", 1.0e6 * baseline_after)
 # | `EVALUATION_INTERVAL_EPISODES` | 25 | Episodes between validation runs |
 # | `EARLY_STOPPING_PATIENCE_EVALS` | 10 | Validation runs without improvement before stopping |
 #
-# `SEED`, `TRAIN_EPISODES`, `ORACLE_WARMSTART_SAMPLES`, `ACTOR_LR`, and `EXPLORATION_STD` can be overridden by
+# `SEED`, `TRAIN_EPISODES`, `ACTOR_LR`, and `EXPLORATION_STD` can be overridden by
 # environment variables of the same name.
 
 # %%
@@ -845,8 +836,6 @@ BATCH_SIZE: Final = 256
 BUFFER_CAPACITY: Final = 60_000
 WARMUP_STEPS: Final = 1_000
 TRAIN_EPISODES: Final = env_int("TRAIN_EPISODES", 700)
-ORACLE_WARMSTART_SAMPLES: Final = env_int("ORACLE_WARMSTART_SAMPLES", 8_000)
-ORACLE_WARMSTART_RIDGE: Final = 1.0e-3
 WARMSTART_EVAL_EPISODES: Final = 120
 VALIDATION_EPISODES: Final = 80
 EVALUATION_INTERVAL_EPISODES: Final = 25
@@ -862,15 +851,10 @@ critic = LinearCritic.create(feature_dim=critic_feature_dim(state_dim, action_di
 target_critic = LinearCritic(weights=critic.weights.copy())
 replay = ReplayBuffer.create(capacity=BUFFER_CAPACITY, state_dim=state_dim, action_dim=action_dim)
 
-warmstart_states, warmstart_kick_ratios = build_oracle_dataset(
-    lattice=LATTICE,
-    sample_count=ORACLE_WARMSTART_SAMPLES,
-    rng_seed=SEED + 123,
-)
-policy = fit_policy_to_oracle(warmstart_states, warmstart_kick_ratios, ridge=ORACLE_WARMSTART_RIDGE)
+policy = nominal_feedback_policy(LATTICE)
 warmstart_summary = evaluate_policy_success(policy, LATTICE, rng_seed=SEED + 220, episodes=WARMSTART_EVAL_EPISODES)
 print(
-    "Warm-start policy:",
+    "Initial policy:",
     f"success={warmstart_summary.success_rate:.1f}%,",
     f"mean steps={warmstart_summary.mean_steps:.2f},",
     f"median error={warmstart_summary.median_error_um:.1f} um",
@@ -1139,12 +1123,17 @@ print("Final BPM readings after RL correction [um]:", 1.0e6 * orbit_after[-2:])
 # usually trained in simulation and then transferred to the real machine (*sim-to-real*), often combined with
 # model-based methods.
 #
-# **What the RL fine-tuning achieves here.** The fine-tuning is stable (100% success throughout training) and reduces
-# the mean number of steps per episode from about 4.3 for the warm-start policy to about 3.7 (checked for
-# `SEED` = 17, 29, and 41). The warm start fits $W$ to one-step oracle corrections at episode starts, whereas RL
-# optimizes $W$ for the whole multi-step episode under the step limit $\Delta\theta_{\max}$ and the 10 µm target.
-# The remaining gap to the about 2.2 steps of repeating the exact correction would require a policy that adapts to
-# the hidden $k$, which in turn requires history in the observation (Exercise 3).
+# **What the RL fine-tuning achieves here.** The fine-tuning is stable (100% success throughout training), but it does
+# **not** improve on the nominal-model feedback of Section 5.3. Evaluated on the same five-seed episodes, the
+# nominal feedback needs 3.60 steps per episode and the RL-tuned policies 3.59 to 3.69 (`SEED` = 17, 29, and 41), and
+# the learned $W$ stays within about 1% of $W_0$. Within the class of fixed linear gains, RL found nothing better
+# than what the design model already provides. The small improvements printed during training are mostly noise of
+# the 80 validation episodes, which checkpoint selection then picks up. This is a common pitfall when selecting
+# models on small validation sets.
+#
+# The remaining gap to the about 2.2 steps of repeating the exact correction comes from the unknown $k$. Closing it
+# requires a policy that adapts to $k$, which in turn requires history in the observation (Exercise 3). This is where
+# RL could add something that a fixed model-based feedback cannot.
 #
 # **What was simplified, and why.** An earlier, SAC-style version of this notebook was reduced step by step, and each
 # reduction was checked over several training seeds. None of the following degraded the training stability or the
@@ -1170,8 +1159,9 @@ print("Final BPM readings after RL correction [um]:", 1.0e6 * orbit_after[-2:])
 #
 # ## Exercises
 #
-# 1. **Effect of the warm start.** Set `%env ORACLE_WARMSTART_SAMPLES=0` and rerun. How do learning speed and final
-#    success rate change?
+# 1. **Learning without prior knowledge.** Replace `nominal_feedback_policy(LATTICE)` in Section 6 by
+#    `LinearPolicy(weight=np.zeros((2, 2)))` and rerun. How do learning speed and final success rate change, and how
+#    close does the learned $W$ get to $W_0$?
 # 2. **Training variability.** Rerun the notebook with several `SEED` values and report the mean and spread of the
 #    final success rate. Compare with the spread of the five-seed evaluation in Section 7.1.
 # 3. **Using history.** Add the BPM change $\Delta s_t$ and the previous action to the observation, and extend the
@@ -1437,7 +1427,9 @@ fig.tight_layout()
 # - **RL policy:** after training, the policy corrects a new episode without probing, typically in slightly fewer
 #   measurements than the response-matrix method, but only to the 10 µm target. Its correction strategy is
 #   *amortized*: the cost was paid in advance by thousands of simulated training steps. It is also the only method
-#   here limited to small kick increments, which mainly sets its number of steps.
+#   here limited to small kick increments, which mainly sets its number of steps. Since the trained policy is
+#   essentially the nominal-model feedback (Section 8), this row also shows what a classical fixed-gain feedback
+#   achieves: no probing, but only approximate steps because $R(k)$ differs from the model $R_0$.
 # - **Bayesian optimization:** BO needs no model and no training, and it sees only a scalar objective. It must
 #   discover the two-dimensional structure of $f(\theta)$ from scratch in every episode, so it needs many more
 #   measurements than the other methods, and some episodes may not reach the micrometre-level target within
