@@ -21,7 +21,10 @@ The original materials were prepared for the 2024 lecture and are now being refr
   - Builds up the posterior step by step: prior, one data point, and ten noisy samples of $f(x) = x\sin x$.
   - Draws functions from the posterior and compares the regression results for different length scales.
   - Optimizes the hyper-parameters ($\sigma_0$ and the length scale) by maximizing the log marginal likelihood.
-- [gpopt1.ipynb](./gpopt1.ipynb)
+- [gpopt1.ipynb](./gpopt1.ipynb): Gaussian process (Bayesian) optimization of a noisy 1D function $f(x) = x\sin x$, implemented with NumPy/SciPy.
+  - Compares the expected improvement (EI) and upper confidence bound (UCB) acquisition functions step by step.
+  - Shows how fitting the hyper-parameters from only a few points can trap the optimizer at a local maximum, and how bounds on the hyper-parameters avoid it.
+  - Evaluates the success rate and the simple regret over 100 seeded runs.
 - [qscan1.ipynb](./qscan1.ipynb)
 - [tomography1.ipynb](./tomography1.ipynb)
 - [thyratron_grid_pca.ipynb](./thyratron_grid_pca.ipynb)
