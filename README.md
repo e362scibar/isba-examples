@@ -17,7 +17,10 @@ The original materials were prepared for the 2024 lecture and are now being refr
   - Updates the Gamma prior to the posterior using seeded random Poisson data.
   - Propagates the posterior uncertainty to the model function $P(k;\lambda)$ numerically (inverse-CDF sampling), giving the mean and the 68% credible interval.
   - Checks the numerical result against analytic solutions: the mean is the negative binomial distribution (posterior predictive), and the variance and quantiles are computed with Gamma integrals and the Lambert $W$ function.
-- [gpr1.ipynb](./gpr1.ipynb)
+- [gpr1.ipynb](./gpr1.ipynb): Gaussian process regression with the RBF kernel, implemented with NumPy/SciPy.
+  - Builds up the posterior step by step: prior, one data point, and ten noisy samples of $f(x) = x\sin x$.
+  - Draws functions from the posterior and compares the regression results for different length scales.
+  - Optimizes the hyper-parameters ($\sigma_0$ and the length scale) by maximizing the log marginal likelihood.
 - [gpopt1.ipynb](./gpopt1.ipynb)
 - [qscan1.ipynb](./qscan1.ipynb)
 - [tomography1.ipynb](./tomography1.ipynb)
