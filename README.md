@@ -13,7 +13,10 @@ The original materials were prepared for the 2024 lecture and are now being refr
 
 ## Current Notebook Set
 
-- [bayes_poisson_1.ipynb](./bayes_poisson_1.ipynb)
+- [bayes_poisson_1.ipynb](./bayes_poisson_1.ipynb): Bayesian inference of the Poisson parameter $\lambda$ with a conjugate Gamma prior.
+  - Updates the Gamma prior to the posterior using seeded random Poisson data.
+  - Propagates the posterior uncertainty to the model function $P(k;\lambda)$ numerically (inverse-CDF sampling), giving the mean and the 68% credible interval.
+  - Checks the numerical result against analytic solutions: the mean is the negative binomial distribution (posterior predictive), and the variance and quantiles are computed with Gamma integrals and the Lambert $W$ function.
 - [gpr1.ipynb](./gpr1.ipynb)
 - [gpopt1.ipynb](./gpopt1.ipynb)
 - [qscan1.ipynb](./qscan1.ipynb)
