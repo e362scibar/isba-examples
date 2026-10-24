@@ -25,8 +25,14 @@ The original materials were prepared for the 2024 lecture and are now being refr
   - Compares the expected improvement (EI) and upper confidence bound (UCB) acquisition functions step by step.
   - Shows how fitting the hyper-parameters from only a few points can trap the optimizer at a local maximum, and how bounds on the hyper-parameters avoid it.
   - Evaluates the success rate and the simple regret over 100 seeded runs.
-- [qscan1.ipynb](./qscan1.ipynb)
-- [tomography1.ipynb](./tomography1.ipynb)
+- [qscan1.ipynb](./qscan1.ipynb): regression of the emittance and the Twiss parameters $(\alpha, \beta)$ from quadrupole scan data with a CNN (Keras).
+  - Generates seeded random Gaussian beams and their quadrupole scan images (beam profile versus $1/f$) with a thin-lens quadrupole and a drift.
+  - Trains a 2D CNN on the scan images with standardized targets and separate training, validation, and test sets.
+  - Evaluates the RMSE and the relative error on the test set, and compares the predicted and true phase-space distributions.
+- [tomography1.ipynb](./tomography1.ipynb): phase-space tomography with a CNN (Keras).
+  - Generates seeded random two-component Gaussian beams and their tomography images (beam profiles for rotation angles from 0 to 178 degrees in normalized phase space).
+  - Trains an encoder-decoder CNN that maps a tomography image to the 2D phase-space image, with the binary cross-entropy loss.
+  - Evaluates the image error and the rms emittance and Twiss parameters calculated from the predicted images on the test set.
 - [thyratron_grid_pca.ipynb](./thyratron_grid_pca.ipynb): abnormal-waveform detection of thyratron grid pulses of 46 new, aged, and failed tubes (data: [wfmdata.tar.gz](./wfmdata.tar.gz), extracted to `data/` automatically).
   - Reduces each 160-sample waveform to six principal-component scores (PCA) and separates new and failed tubes with a linear regression and a support vector regression.
   - Evaluates the separation on unseen tubes by leave-one-tube-out, and compares the output for the aged tubes with their operating hours.
