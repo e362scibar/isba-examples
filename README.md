@@ -28,7 +28,9 @@ The original materials were prepared for the 2024 lecture and are now being refr
 - [qscan1.ipynb](./qscan1.ipynb)
 - [tomography1.ipynb](./tomography1.ipynb)
 - [thyratron_grid_pca.ipynb](./thyratron_grid_pca.ipynb)
-- [thyratron_selfdischarge.ipynb](./thyratron_selfdischarge.ipynb)
+- [thyratron_selfdischarge.ipynb](./thyratron_selfdischarge.ipynb): failure prognostics of a thyratron from its self-discharge counts (data: [thyratron_selfdischarge.csv](./thyratron_selfdischarge.csv)).
+  - Infers the self-discharge rate with a Poisson likelihood and a conjugate Gamma prior, and derives the negative binomial predictive distribution of the hourly and cumulative counts (conditioning on the rate before integrating it out).
+  - Detects the anomaly before the tube replacement by comparing the counts with the prediction from 24 hours before, and chooses the alarm threshold from the false alarms in a normal reference period.
 - [orbit_corr_rl.ipynb](./orbit_corr_rl.ipynb): new in 2026; a reinforcement learning example of two-corrector orbit correction (see [New 2026 Notebooks](#new-2026-notebooks)).
 - [diff_sim_1.ipynb](./diff_sim_1.ipynb)
 
