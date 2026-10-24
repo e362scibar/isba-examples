@@ -27,7 +27,9 @@ The original materials were prepared for the 2024 lecture and are now being refr
   - Evaluates the success rate and the simple regret over 100 seeded runs.
 - [qscan1.ipynb](./qscan1.ipynb)
 - [tomography1.ipynb](./tomography1.ipynb)
-- [thyratron_grid_pca.ipynb](./thyratron_grid_pca.ipynb)
+- [thyratron_grid_pca.ipynb](./thyratron_grid_pca.ipynb): abnormal-waveform detection of thyratron grid pulses of 46 new, aged, and failed tubes (data: [wfmdata.tar.gz](./wfmdata.tar.gz), extracted to `data/` automatically).
+  - Reduces each 160-sample waveform to six principal-component scores (PCA) and separates new and failed tubes with a linear regression and a support vector regression.
+  - Evaluates the separation on unseen tubes by leave-one-tube-out, and compares the output for the aged tubes with their operating hours.
 - [thyratron_selfdischarge.ipynb](./thyratron_selfdischarge.ipynb): failure prognostics of a thyratron from its self-discharge counts (data: [thyratron_selfdischarge.csv](./thyratron_selfdischarge.csv)).
   - Infers the self-discharge rate with a Poisson likelihood and a conjugate Gamma prior, and derives the negative binomial predictive distribution of the hourly and cumulative counts (conditioning on the rate before integrating it out).
   - Detects the anomaly before the tube replacement by comparing the counts with the prediction from 24 hours before, and chooses the alarm threshold from the false alarms in a normal reference period.
@@ -80,7 +82,6 @@ When updating the notebooks for 2026:
 1. Open notebooks in Google Colaboratory whenever possible.
 2. Verify required Python packages are installed in the Colab runtime.
 3. Run notebooks top-to-bottom after checking paths and mounted storage.
-4. If needed, unpack [wfmdata.tar.gz](./wfmdata.tar.gz) before running waveform-related sections.
 
 ## Local Validation Environment (Conda)
 

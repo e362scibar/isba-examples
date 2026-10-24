@@ -16,7 +16,7 @@
 # %% [markdown] id="ce1d0c98-ea9a-4613-a970-9a7fce2af460"
 # # Example of Bayesian inference for the self-discharge count of a thyratron
 #
-# Copyright (C) 2024 Hirokazu Maesaka, RIKEN SPring-8 Center. All rights reserved.
+# Copyright (C) 2026 Hirokazu Maesaka, RIKEN SPring-8 Center. All rights reserved.
 #
 # This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 #
