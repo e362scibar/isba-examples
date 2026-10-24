@@ -29,15 +29,16 @@ The original materials were prepared for the 2024 lecture and are now being refr
 - [tomography1.ipynb](./tomography1.ipynb)
 - [thyratron_grid_pca.ipynb](./thyratron_grid_pca.ipynb)
 - [thyratron_selfdischarge.ipynb](./thyratron_selfdischarge.ipynb)
-- [orbit_corr_rl.ipynb](./orbit_corr_rl.ipynb)
+- [orbit_corr_rl.ipynb](./orbit_corr_rl.ipynb): new in 2026; a reinforcement learning example of two-corrector orbit correction (see [New 2026 Notebooks](#new-2026-notebooks)).
 - [diff_sim_1.ipynb](./diff_sim_1.ipynb)
 
 ## New 2026 Notebooks
 
 - [orbit_corr_rl.ipynb](./orbit_corr_rl.ipynb): reinforcement learning example for two-corrector orbit correction.
-  - Implemented with NumPy/SciPy and Matplotlib.
+  - Implemented with NumPy/SciPy and Matplotlib; scikit-learn is used only for the Bayesian-optimization comparison.
   - Does not require `gymnasium`, `stable-baselines3`, or `torch`.
-  - Includes a compact SAC-style training loop with replay, twin critics, adaptive entropy weight, and early stopping.
+  - Trains a compact DDPG-style agent (linear actor, quadratic critic, replay buffer, target critic, Adam) from scratch, without prior knowledge, with checkpoint selection and early stopping.
+  - Compares the learned policy with the nominal-model orbit feedback, the response-matrix correction, and Bayesian optimization, and shows the training variability over five seeds, including a warm start from the nominal feedback.
 - [diff_sim_1.ipynb](./diff_sim_1.ipynb): differentiable-simulation example for Twiss (beam envelope) matching.
   - Beamline of five drifts and four thin-lens quadrupoles, written as pure JAX functions.
   - Matches the exit Twiss parameters from random but known entrance Twiss parameters by tuning the four quadrupole strengths.
