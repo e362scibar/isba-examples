@@ -176,7 +176,7 @@ print(f"Seed: {SEED}")
 # %%
 @dataclass(frozen=True)
 class Lattice:
-    """Geometry and hidden-latent limits for the two-corrector toy lattice."""
+    """Geometry, hidden-latent ranges, and corrector limits for the two-corrector toy lattice."""
 
     drift_to_quad: float = 0.60
     drift_to_corrector_2: float = 0.40
@@ -184,7 +184,10 @@ class Lattice:
     drift_to_bpm_2: float = 0.50
     x0_limit: float = 2.0e-3
     xp0_limit: float = 1.5e-3
-    k_limit: float = 0.60
+    k_min: float = -0.60
+    k_max: float = 0.60
+    max_kick: float = 4.0e-3
+    max_kick_increment: float = 8.0e-4
 
 
 LATTICE: Final = Lattice()
@@ -213,7 +216,7 @@ class BeamlineSimulator:
         """Set hidden episode parameters after range validation."""
         if abs(x0) > self.lattice.x0_limit or abs(xp0) > self.lattice.xp0_limit:
             raise ValueError("Incoming coordinates are outside configured limits.")
-        if abs(quadrupole_strength) > self.lattice.k_limit:
+        if not self.lattice.k_min <= quadrupole_strength <= self.lattice.k_max:
             raise ValueError("Quadrupole strength is outside configured limits.")
         self.x0 = x0
         self.xp0 = xp0
@@ -294,7 +297,7 @@ def analytic_response_matrix(quadrupole_strength: float, lattice: Lattice) -> np
     )
 
 
-k_scan = np.linspace(-LATTICE.k_limit, LATTICE.k_limit, 401)
+k_scan = np.linspace(LATTICE.k_min, LATTICE.k_max, 401)
 determinants = np.asarray([np.linalg.det(analytic_response_matrix(k_value, LATTICE)) for k_value in k_scan])
 smallest_singular_values = np.asarray(
     [np.linalg.svd(analytic_response_matrix(k_value, LATTICE), compute_uv=False)[-1] for k_value in k_scan]
@@ -388,8 +391,8 @@ fig.tight_layout()
 
 # %%
 BPM_SCALE: Final = 1.0e-3
-MAX_KICK_INCREMENT: Final = 8.0e-4
-MAX_KICK: Final = 4.0e-3
+MAX_KICK_INCREMENT: Final = LATTICE.max_kick_increment
+MAX_KICK: Final = LATTICE.max_kick
 TARGET_TOLERANCE: Final = 1.0e-5
 PROGRESS_REWARD_SCALE: Final = 0.2
 SUCCESS_BONUS: Final = 5.0
@@ -413,7 +416,7 @@ class TwoCorrectorOrbitEnv:
     def reset(self) -> np.ndarray:
         x0 = self.rng.uniform(-self.lattice.x0_limit, self.lattice.x0_limit)
         xp0 = self.rng.uniform(-self.lattice.xp0_limit, self.lattice.xp0_limit)
-        quadrupole_strength = self.rng.uniform(-self.lattice.k_limit, self.lattice.k_limit)
+        quadrupole_strength = self.rng.uniform(self.lattice.k_min, self.lattice.k_max)
         self.simulator.set_hidden_episode_state(x0, xp0, quadrupole_strength)
         self.kicks = np.zeros(2, dtype=np.float64)
         self.normalized_bpm = self.simulator.bpm_readings(self.kicks) / BPM_SCALE
@@ -424,7 +427,9 @@ class TwoCorrectorOrbitEnv:
         """Apply one action and return (observation, reward, terminated, truncated, info)."""
         clipped_action = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
         previous_squared_error = self._squared_error()
-        self.kicks = np.clip(self.kicks + MAX_KICK_INCREMENT * clipped_action, -MAX_KICK, MAX_KICK)
+        self.kicks = np.clip(
+            self.kicks + self.lattice.max_kick_increment * clipped_action, -self.lattice.max_kick, self.lattice.max_kick
+        )
         self.step_count += 1
         readings = self.simulator.bpm_readings(self.kicks)
         self.normalized_bpm = readings / BPM_SCALE
@@ -482,7 +487,8 @@ def response_matrix_correction(environment: TwoCorrectorOrbitEnv) -> tuple[np.nd
     before = environment.simulator.bpm_readings(environment.kicks)
     response = estimate_response_matrix(environment.simulator, environment.kicks)
     kick_change = np.linalg.solve(response, -before)
-    environment.kicks = np.clip(environment.kicks + kick_change, -MAX_KICK, MAX_KICK)
+    max_kick = environment.lattice.max_kick
+    environment.kicks = np.clip(environment.kicks + kick_change, -max_kick, max_kick)
     after = environment.simulator.bpm_readings(environment.kicks)
     return before, after
 
@@ -766,10 +772,10 @@ class LinearPolicy:
 NOMINAL_QUADRUPOLE_STRENGTH: Final = 0.0
 
 
-def nominal_feedback_policy(lattice: Lattice) -> LinearPolicy:
-    """Return the fixed-gain orbit feedback W0 = -(s_bpm / dtheta_max) R0^-1 of the nominal optics."""
-    nominal_response = analytic_response_matrix(NOMINAL_QUADRUPOLE_STRENGTH, lattice)
-    return LinearPolicy(weight=-(BPM_SCALE / MAX_KICK_INCREMENT) * np.linalg.inv(nominal_response))
+def nominal_feedback_policy(lattice: Lattice, reference_k: float = NOMINAL_QUADRUPOLE_STRENGTH) -> LinearPolicy:
+    """Return the fixed-gain orbit feedback W0 = -(s_bpm / dtheta_max) R(k_ref)^-1 of the model optics."""
+    nominal_response = analytic_response_matrix(reference_k, lattice)
+    return LinearPolicy(weight=-(BPM_SCALE / lattice.max_kick_increment) * np.linalg.inv(nominal_response))
 
 
 @dataclass(frozen=True)
@@ -906,10 +912,10 @@ if INITIAL_POLICY not in ("zero", "nominal"):
     raise ValueError("INITIAL_POLICY must be 'zero' or 'nominal'.")
 
 
-def initial_policy(kind: str) -> LinearPolicy:
-    """Return the untrained actor W = 0 ('zero') or the nominal-model feedback W0 ('nominal')."""
+def initial_policy(kind: str, lattice: Lattice = LATTICE) -> LinearPolicy:
+    """Return the untrained actor W = 0 ('zero') or the nominal-model feedback W0 with k0 = 0 ('nominal')."""
     if kind == "nominal":
-        return nominal_feedback_policy(LATTICE)
+        return nominal_feedback_policy(lattice)
     return LinearPolicy(weight=np.zeros((2, 2), dtype=np.float64))
 
 
@@ -927,17 +933,19 @@ class TrainingResult:
     replay_size: int
 
 
-def train_agent(seed: int, kind: str, episodes: int = TRAIN_EPISODES, verbose: bool = False) -> TrainingResult:
+def train_agent(
+    seed: int, kind: str, episodes: int = TRAIN_EPISODES, verbose: bool = False, lattice: Lattice = LATTICE
+) -> TrainingResult:
     """Train the DDPG-style agent from the initial policy `kind` and return the best checkpoint."""
     rng = np.random.default_rng(seed)
-    training_env = TwoCorrectorOrbitEnv(LATTICE, rng_seed=seed + 10)
+    training_env = TwoCorrectorOrbitEnv(lattice, rng_seed=seed + 10)
     critic = LinearCritic.create(rng)
     target_critic = LinearCritic(weights=critic.weights.copy())
     replay = ReplayBuffer.create(capacity=BUFFER_CAPACITY, state_dim=2, action_dim=2)
-    policy = initial_policy(kind)
+    policy = initial_policy(kind, lattice)
 
     best_policy = policy.copy()
-    best_summary = evaluate_policy_success(policy, LATTICE, rng_seed=seed + 220, episodes=VALIDATION_EPISODES)
+    best_summary = evaluate_policy_success(policy, lattice, rng_seed=seed + 220, episodes=VALIDATION_EPISODES)
     best_episode = 0
     validation_episodes, validation_success, validation_steps = [0], [best_summary.success_rate], [best_summary.mean_steps]
     evaluations_without_improvement = 0
@@ -973,7 +981,7 @@ def train_agent(seed: int, kind: str, episodes: int = TRAIN_EPISODES, verbose: b
         episode_returns.append(cumulative_reward)
         if (episode + 1) % EVALUATION_INTERVAL_EPISODES != 0:
             continue
-        candidate = evaluate_policy_success(policy, LATTICE, rng_seed=seed + 330 + episode, episodes=VALIDATION_EPISODES)
+        candidate = evaluate_policy_success(policy, lattice, rng_seed=seed + 330 + episode, episodes=VALIDATION_EPISODES)
         validation_episodes.append(episode + 1)
         validation_success.append(candidate.success_rate)
         validation_steps.append(candidate.mean_steps)
@@ -1046,14 +1054,17 @@ class ExactCorrectionPolicy:
         self.environment = environment
 
     def action(self, state: np.ndarray) -> np.ndarray:
-        response = analytic_response_matrix(self.environment.simulator.quadrupole_strength, LATTICE)
+        lattice = self.environment.lattice
+        response = analytic_response_matrix(self.environment.simulator.quadrupole_strength, lattice)
         kick_change = np.linalg.solve(response, -state * BPM_SCALE)
-        return np.clip(kick_change / MAX_KICK_INCREMENT, -1.0, 1.0)
+        return np.clip(kick_change / lattice.max_kick_increment, -1.0, 1.0)
 
 
-def evaluate_with_errors(policy_factory, rng_seed: int, episodes: int) -> dict[str, np.ndarray]:
+def evaluate_with_errors(
+    policy_factory, rng_seed: int, episodes: int, lattice: Lattice = LATTICE
+) -> dict[str, np.ndarray]:
     """Run noise-free episodes and return returns, final errors, lengths, and success flags."""
-    environment = TwoCorrectorOrbitEnv(LATTICE, rng_seed=rng_seed)
+    environment = TwoCorrectorOrbitEnv(lattice, rng_seed=rng_seed)
     controller = policy_factory(environment)
     results: dict[str, list] = {"returns": [], "discounted_returns": [], "final_errors": [], "lengths": [], "successes": []}
     for _ in range(episodes):
@@ -1311,6 +1322,163 @@ for kind in ("zero", "nominal"):
         )
 
 # %% [markdown]
+# ### 7.5 Strong quadrupole: when the model-based feedback is wrong
+#
+# So far the hidden quadrupole is weak, $|k| \le 0.6$ m$^{-1}$, and the feedback $W_0$ from the model without the
+# quadrupole works in every episode. Here we make the quadrupole so strong that this prior knowledge fails.
+#
+# **Where does $W_0$ fail?** From the response matrix of Section 2,
+# $$
+# \det R(k) = L_4\left[L_1 + (1-kL_1)L_2\right],
+# $$
+# which vanishes at $k_c = (L_1+L_2)/(L_1L_2) \approx 4.17$ m$^{-1}$: there the two correctors cannot steer the two BPMs
+# independently. Without the $\tanh$ saturation, the closed loop with $W_0$ multiplies the orbit error by
+# $I - R(k)R_0^{-1}$, whose nonzero eigenvalue is $k/k_c$. Hence $W_0$ diverges for $|k| \ge k_c$. For $k > k_c$ the sign
+# of $\det R$ is flipped, so no rescaling $\alpha W_0$ can work: the correction points in the wrong direction.
+#
+# **Scenario.** We draw $k \in [5, 7]$ m$^{-1}$ (beyond $k_c$), and compare:
+#
+# 1. $W_0$ from the wrong model ($k_0 = 0$, as before),
+# 2. $W_0$ from the correct model at a reference strength $k_\mathrm{ref} = 6$ m$^{-1}$ (center of the range),
+# 3. RL trained from $W = 0$, and
+# 4. RL warm-started from the wrong $W_0$ ($k_0 = 0$).
+#
+# Close to $k_c$, much larger kicks are needed (the smallest singular value of $R$ is about five times smaller than
+# for the weak quadrupole). The kick limit and the step limit are therefore scaled by `STRONG_KICK_SCALE = 3`, i.e.
+# $\theta_{\max} = 12$ mrad and $\Delta\theta_{\max} = 2.4$ mrad; the code checks that the exact correction stays within the
+# kick limit. The range, the reference strength, and the scale can be changed with the environment variables
+# `STRONG_K_MIN`, `STRONG_K_MAX`, `STRONG_K_REF`, and `STRONG_KICK_SCALE`. This section takes about one minute.
+#
+# (A thin quadrupole of $k = 6$ m$^{-1}$, i.e. a focal length of 17 cm, is unrealistically strong for this beamline;
+# the scenario is a stand-in for any situation where the machine differs strongly from the model.)
+
+# %%
+STRONG_K_MIN: Final = env_float("STRONG_K_MIN", 5.0)
+STRONG_K_MAX: Final = env_float("STRONG_K_MAX", 7.0)
+STRONG_K_REF: Final = env_float("STRONG_K_REF", 6.0)
+STRONG_KICK_SCALE: Final = env_float("STRONG_KICK_SCALE", 3.0)
+STRONG_CHECK_EPISODES: Final = 2_000
+STRONG_EVAL_SEED: Final = SEED + 90_000
+STRONG_LATTICE: Final = Lattice(
+    k_min=STRONG_K_MIN,
+    k_max=STRONG_K_MAX,
+    max_kick=STRONG_KICK_SCALE * LATTICE.max_kick,
+    max_kick_increment=STRONG_KICK_SCALE * LATTICE.max_kick_increment,
+)
+
+critical_k = (STRONG_LATTICE.drift_to_quad + STRONG_LATTICE.drift_to_corrector_2) / (
+    STRONG_LATTICE.drift_to_quad * STRONG_LATTICE.drift_to_corrector_2
+)
+strong_k_scan = np.linspace(STRONG_K_MIN, STRONG_K_MAX, 201)
+
+
+def worst_spectral_radius(reference_k: float) -> float:
+    """Return the largest spectral radius of I - R(k) R(k_ref)^-1 over the strong-k range (no saturation)."""
+    reference_inverse = np.linalg.inv(analytic_response_matrix(reference_k, STRONG_LATTICE))
+    return max(
+        np.max(np.abs(np.linalg.eigvals(np.eye(2) - analytic_response_matrix(k, STRONG_LATTICE) @ reference_inverse)))
+        for k in strong_k_scan
+    )
+
+
+check_env = TwoCorrectorOrbitEnv(STRONG_LATTICE, rng_seed=STRONG_EVAL_SEED + 1)
+required_kicks = []
+for _ in range(STRONG_CHECK_EPISODES):
+    check_env.reset()
+    exact_kicks = np.linalg.solve(
+        analytic_response_matrix(check_env.simulator.quadrupole_strength, STRONG_LATTICE),
+        -check_env.simulator.bpm_readings(np.zeros(2)),
+    )
+    required_kicks.append(np.max(np.abs(exact_kicks)))
+required_kicks = np.asarray(required_kicks)
+
+print(f"Critical strength k_c = {critical_k:.3f} 1/m, det R(k_c) = {np.linalg.det(analytic_response_matrix(critical_k, STRONG_LATTICE)):.1e}")
+print(f"Worst spectral radius over k in [{STRONG_K_MIN}, {STRONG_K_MAX}]:",
+      f"W0 from k=0: {worst_spectral_radius(0.0):.2f}, W0 from k_ref={STRONG_K_REF}: {worst_spectral_radius(STRONG_K_REF):.2f}")
+print(f"Required |kick| of the exact correction [mrad]: median={1.0e3 * np.median(required_kicks):.1f},",
+      f"max={1.0e3 * np.max(required_kicks):.1f}, limit={1.0e3 * STRONG_LATTICE.max_kick:.1f}")
+assert np.max(required_kicks) < STRONG_LATTICE.max_kick, "Increase STRONG_KICK_SCALE: the target is not reachable."
+
+# %%
+wrong_policy = nominal_feedback_policy(STRONG_LATTICE, reference_k=0.0)
+correct_policy = nominal_feedback_policy(STRONG_LATTICE, reference_k=STRONG_K_REF)
+strong_runs: dict[str, list[TrainingResult]] = {
+    kind: [train_agent(training_seed, kind, lattice=STRONG_LATTICE) for training_seed in VARIABILITY_SEEDS]
+    for kind in ("zero", "nominal")
+}
+
+
+def strong_summary(name: str, policy_factory) -> tuple[float, float]:
+    """Evaluate a controller on the strong-quadrupole episodes and print its success rate and mean steps."""
+    result = evaluate_with_errors(policy_factory, STRONG_EVAL_SEED, EVAL_EPISODES, lattice=STRONG_LATTICE)
+    success, steps = 100.0 * np.mean(result["successes"]), np.mean(result["lengths"])
+    print(f"  {name:44s}: success={success:5.1f}%, mean steps={steps:5.2f}")
+    return success, steps
+
+
+print(f"Strong quadrupole, k in [{STRONG_K_MIN}, {STRONG_K_MAX}] 1/m, {EVAL_EPISODES} evaluation episodes:")
+strong_summary("Exact correction (true k)", ExactCorrectionPolicy)
+strong_summary("W0 from the wrong model (k0 = 0)", lambda env: wrong_policy)
+correct_steps = strong_summary(f"W0 from the correct model (k_ref = {STRONG_K_REF})", lambda env: correct_policy)[1]
+for kind, label in [("zero", "RL from W = 0"), ("nominal", "RL from the wrong W0")]:
+    for training_seed, result in zip(VARIABILITY_SEEDS, strong_runs[kind]):
+        strong_summary(f"{label}, seed {training_seed} (best episode {result.best_episode})", lambda env: result.best_policy)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 4))
+for kind, line_style, label in [("zero", "-", "W=0"), ("nominal", "--", "wrong W0")]:
+    for color_index, (training_seed, result) in enumerate(zip(VARIABILITY_SEEDS, strong_runs[kind])):
+        axes[0].plot(result.validation_episodes, result.validation_success, line_style, color=f"C{color_index}",
+                     label=f"{label}, seed {training_seed}")
+        axes[1].plot(result.validation_episodes, result.validation_steps, line_style, color=f"C{color_index}",
+                     label=f"{label}, seed {training_seed}")
+axes[1].axhline(correct_steps, color="gray", linestyle=":", label=f"W0 from k_ref = {STRONG_K_REF} (no training)")
+axes[0].set(xlabel="Training episode", ylabel="Validation success [%]", title="Strong quadrupole: success rate")
+axes[1].set(xlabel="Training episode", ylabel="Mean steps per episode", title="Strong quadrupole: steps")
+axes[1].legend(fontsize=7, ncol=2)
+fig.tight_layout()
+
+# %% [markdown]
+# The panels below show the same diagnostics as Section 7.2 for the strong quadrupole, for the training seed `SEED`:
+# the top row starts from $W = 0$, the bottom row from the wrong $W_0$ ($k_0 = 0$). As in Section 7.2, the evaluation
+# panels use the restored best checkpoint of each run on the strong-quadrupole evaluation episodes.
+
+# %%
+STRONG_RUN_LABELS: Final = {"zero": "strong k, start from W = 0", "nominal": "strong k, start from wrong W0 (k0 = 0)"}
+
+
+def strong_run_for_seed(kind: str) -> TrainingResult:
+    """Return the strong-quadrupole training run with the training seed SEED (reused from above if available)."""
+    if SEED in VARIABILITY_SEEDS:
+        return strong_runs[kind][VARIABILITY_SEEDS.index(SEED)]
+    return train_agent(SEED, kind, lattice=STRONG_LATTICE)
+
+
+fig, axes = plt.subplots(2, 3, figsize=(16, 7.6))
+for row, kind in enumerate(("zero", "nominal")):
+    result = strong_run_for_seed(kind)
+    evaluation = evaluate_with_errors(
+        lambda env: result.best_policy, STRONG_EVAL_SEED, EVAL_EPISODES, lattice=STRONG_LATTICE
+    )
+    plot_training_summary(axes[row], result, evaluation, STRONG_RUN_LABELS[kind])
+    print(
+        f"{STRONG_RUN_LABELS[kind]:40s}: best checkpoint at episode {result.best_episode},",
+        f"success={100.0 * np.mean(evaluation['successes']):5.1f}%, mean steps={np.mean(evaluation['lengths']):5.2f}",
+    )
+fig.tight_layout()
+
+# %% [markdown]
+# Things to look for:
+#
+# - The feedback from the wrong model fails in every episode, while the feedback from the correct model works.
+#   A model-based controller is only as good as its model.
+# - RL needs no model. Trained from $W = 0$ or from the wrong $W_0$, it learns to correct the orbit in (almost) every
+#   episode within a few hundred training episodes, where the wrong prior knowledge gives nothing.
+# - RL does not reach the feedback from the correct model, for the same reason as in the weak-quadrupole case
+#   (the approximation error of the critic, Section 8).
+# - In short: RL can beat a wrong model, but not a correct one. In practice, the best of both is to keep the model
+#   up to date (e.g. by measuring the response matrix) and to use RL for what the model cannot describe.
+
+# %% [markdown]
 # ## 8. Discussion and limitations
 #
 # **RL versus the response-matrix method.** In this linear, noiseless model, the response-matrix correction is exact
@@ -1350,6 +1518,10 @@ for kind in ("zero", "nominal"):
 # with fewer steps than the trained policy. Here, the most useful role of RL training would be to adapt to what the
 # model does not know. The remaining gap to the exact correction (Section 7) comes from the unknown $k$. Closing it
 # requires a policy that adapts to $k$, which in turn requires history in the observation (Exercise 3).
+#
+# **When the model is wrong.** With a strong quadrupole (Section 7.5), the feedback from the model without the
+# quadrupole fails completely, and RL learns a working controller from scratch or from the wrong prior. A feedback from
+# the correct model is still better. The value of RL is therefore largest where no good model is available.
 #
 # **What was simplified, and why.** An earlier, SAC-style version of this notebook was reduced step by step, and each
 # reduction was checked over several training seeds: removing the action cost, the milestone bonuses, and the time-out
@@ -1510,7 +1682,7 @@ def bayesian_optimization_episode(simulator: BeamlineSimulator, rng: np.random.G
         candidates = np.clip(np.vstack([global_candidates, local_candidates]), -1.0, 1.0)
         mean, std = gaussian_process.predict(candidates, return_std=True)
         next_point = candidates[int(np.argmax(expected_improvement(mean, std, min(values))))]
-        kicks = MAX_KICK * next_point
+        kicks = simulator.lattice.max_kick * next_point
         normalized_points.append(next_point)
         values.append(orbit_objective(simulator, kicks))
         max_errors.append(float(np.max(np.abs(simulator.bpm_readings(kicks)))))
@@ -1541,47 +1713,52 @@ def response_matrix_episode(environment: TwoCorrectorOrbitEnv) -> CorrectionTrac
 # %% [markdown]
 # ### 9.5 Running the comparison
 #
-# All three methods use environments created with the same seed, so they see identical sequences of hidden
+# All methods use environments created with the same seed, so they see identical sequences of hidden
 # parameters $(x_0, x'_0, k)$. The number of BO episodes can be changed with the environment variable `BO_EPISODES`;
 # each BO episode refits a GP up to 35 times and takes a fraction of a second.
 
 # %%
-comparison_rng = np.random.default_rng(COMPARISON_SEED)
-comparison_environments = {
-    "Response matrix": TwoCorrectorOrbitEnv(LATTICE, rng_seed=COMPARISON_SEED),
-    "Nominal feedback W0": TwoCorrectorOrbitEnv(LATTICE, rng_seed=COMPARISON_SEED),
-    "RL policy (DDPG)": TwoCorrectorOrbitEnv(LATTICE, rng_seed=COMPARISON_SEED),
-    "Bayesian optimization": TwoCorrectorOrbitEnv(LATTICE, rng_seed=COMPARISON_SEED),
-}
-comparison_traces: dict[str, list[CorrectionTrace]] = {name: [] for name in comparison_environments}
+def run_comparison(
+    lattice: Lattice, linear_policies: dict[str, LinearPolicy], episodes: int, seed: int
+) -> dict[str, list[CorrectionTrace]]:
+    """Run the response matrix, the given linear policies, and BO on identical episodes of the given lattice."""
+    bo_rng = np.random.default_rng(seed)
+    names = ["Response matrix", *linear_policies, "Bayesian optimization"]
+    environments = {name: TwoCorrectorOrbitEnv(lattice, rng_seed=seed) for name in names}
+    traces: dict[str, list[CorrectionTrace]] = {name: [] for name in names}
+    for _ in range(episodes):
+        environments["Response matrix"].reset()
+        traces["Response matrix"].append(response_matrix_episode(environments["Response matrix"]))
+        for name, linear_policy in linear_policies.items():
+            linear_state = environments[name].reset()
+            traces[name].append(rl_policy_episode(environments[name], linear_policy, linear_state))
+        environments["Bayesian optimization"].reset()
+        traces["Bayesian optimization"].append(
+            bayesian_optimization_episode(environments["Bayesian optimization"].simulator, bo_rng)
+        )
+    return traces
 
-for _ in range(BO_EPISODES):
-    comparison_environments["Response matrix"].reset()
-    comparison_traces["Response matrix"].append(response_matrix_episode(comparison_environments["Response matrix"]))
 
-    for name, linear_policy in [("Nominal feedback W0", nominal_policy), ("RL policy (DDPG)", policy)]:
-        linear_environment = comparison_environments[name]
-        linear_state = linear_environment.reset()
-        comparison_traces[name].append(rl_policy_episode(linear_environment, linear_policy, linear_state))
+def print_comparison(traces: dict[str, list[CorrectionTrace]]) -> None:
+    """Print success rate, mean number of measurements, and median final error of each method."""
+    for name, method_traces in traces.items():
+        successes = np.asarray([trace.is_success for trace in method_traces])
+        measurements = np.asarray([trace.measurements for trace in method_traces])
+        final_errors_um = 1.0e6 * np.asarray([trace.max_errors[-1] for trace in method_traces])
+        mean_successful = float(np.mean(measurements[successes])) if np.any(successes) else float("nan")
+        print(
+            f"  {name:40s}:",
+            f"success={100.0 * np.mean(successes):5.1f}%,",
+            f"mean measurements (successful)={mean_successful:5.2f},",
+            f"median final error={np.median(final_errors_um):9.2f} um",
+        )
 
-    bo_environment = comparison_environments["Bayesian optimization"]
-    bo_environment.reset()
-    comparison_traces["Bayesian optimization"].append(
-        bayesian_optimization_episode(bo_environment.simulator, comparison_rng)
-    )
 
+comparison_traces = run_comparison(
+    LATTICE, {"Nominal feedback W0": nominal_policy, "RL policy (DDPG)": policy}, BO_EPISODES, COMPARISON_SEED
+)
 print(f"Comparison over {BO_EPISODES} identical episodes:")
-for name, traces in comparison_traces.items():
-    successes = np.asarray([trace.is_success for trace in traces])
-    measurements = np.asarray([trace.measurements for trace in traces])
-    final_errors_um = 1.0e6 * np.asarray([trace.max_errors[-1] for trace in traces])
-    mean_successful = float(np.mean(measurements[successes])) if np.any(successes) else float("nan")
-    print(
-        f"  {name:22s}:",
-        f"success={100.0 * np.mean(successes):5.1f}%,",
-        f"mean measurements (successful)={mean_successful:5.2f},",
-        f"median final error={np.median(final_errors_um):7.2f} um",
-    )
+print_comparison(comparison_traces)
 
 # %% [markdown]
 # ### 9.6 Convergence and measurement count
@@ -1606,37 +1783,40 @@ def best_so_far_matrix(traces: list[CorrectionTrace], length: int) -> np.ndarray
 
 QUARTILES: Final = (25.0, 50.0, 75.0)
 CONVERGENCE_PLOT_FLOOR_UM: Final = 0.1
-measurement_axis = np.arange(1, MAX_STEPS + 1)
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-for name, traces in comparison_traces.items():
-    best_so_far_um = np.maximum(1.0e6 * best_so_far_matrix(traces, MAX_STEPS), CONVERGENCE_PLOT_FLOOR_UM)
-    lower, median, upper = np.percentile(best_so_far_um, QUARTILES, axis=0)
-    line = axes[0].plot(measurement_axis, median, marker=".", label=name)[0]
-    axes[0].fill_between(measurement_axis, lower, upper, color=line.get_color(), alpha=0.2)
-axes[0].axhline(1.0e6 * TARGET_TOLERANCE, color="black", linestyle="--", linewidth=1.0, label="Success threshold")
-axes[0].set_yscale("log")
-axes[0].set_ylim(bottom=0.5 * CONVERGENCE_PLOT_FLOOR_UM)
-axes[0].set(
-    xlabel="Machine measurements",
-    ylabel="Best max BPM error so far [um]",
-    title="Convergence (median and interquartile range)",
-)
-axes[0].legend()
 
-measurement_bins = np.arange(0.5, MAX_STEPS + 1.5, 1.0)
-largest_successful_count = 1
-for name, traces in comparison_traces.items():
-    successful_counts = [trace.measurements for trace in traces if trace.is_success]
-    axes[1].hist(successful_counts, bins=measurement_bins, alpha=0.6, label=name)
-    largest_successful_count = max([largest_successful_count, *successful_counts])
-axes[1].set_xlim(0.5, largest_successful_count + 1.5)
-axes[1].set(
-    xlabel="Measurements to success",
-    ylabel="Episodes",
-    title="Measurements needed for success",
-)
-axes[1].legend()
-fig.tight_layout()
+
+def plot_comparison(traces: dict[str, list[CorrectionTrace]], title_suffix: str = "") -> None:
+    """Plot the best-so-far error versus measurements and the histogram of measurements to success."""
+    measurement_axis = np.arange(1, MAX_STEPS + 1)
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.2))
+    for name, method_traces in traces.items():
+        best_so_far_um = np.maximum(1.0e6 * best_so_far_matrix(method_traces, MAX_STEPS), CONVERGENCE_PLOT_FLOOR_UM)
+        lower, median, upper = np.percentile(best_so_far_um, QUARTILES, axis=0)
+        line = axes[0].plot(measurement_axis, median, marker=".", label=name)[0]
+        axes[0].fill_between(measurement_axis, lower, upper, color=line.get_color(), alpha=0.2)
+    axes[0].axhline(1.0e6 * TARGET_TOLERANCE, color="black", linestyle="--", linewidth=1.0, label="Success threshold")
+    axes[0].set_yscale("log")
+    axes[0].set_ylim(bottom=0.5 * CONVERGENCE_PLOT_FLOOR_UM)
+    axes[0].set(
+        xlabel="Machine measurements",
+        ylabel="Best max BPM error so far [um]",
+        title=f"Convergence (median and interquartile range){title_suffix}",
+    )
+    axes[0].legend(fontsize=8)
+
+    measurement_bins = np.arange(0.5, MAX_STEPS + 1.5, 1.0)
+    largest_successful_count = 1
+    for name, method_traces in traces.items():
+        successful_counts = [trace.measurements for trace in method_traces if trace.is_success]
+        axes[1].hist(successful_counts, bins=measurement_bins, alpha=0.6, label=name)
+        largest_successful_count = max([largest_successful_count, *successful_counts])
+    axes[1].set_xlim(0.5, largest_successful_count + 1.5)
+    axes[1].set(xlabel="Measurements to success", ylabel="Episodes", title=f"Measurements needed for success{title_suffix}")
+    axes[1].legend(fontsize=8)
+    fig.tight_layout()
+
+
+plot_comparison(comparison_traces)
 
 # %% [markdown]
 # ### 9.7 Discussion
@@ -1665,3 +1845,39 @@ fig.tight_layout()
 # 2. Add BPM noise and observe how the fitted `WhiteKernel` level and the BO convergence change.
 # 3. Give BO the same step limit as RL by restricting candidates to $\lvert\theta-\theta_{\mathrm{last}}\rvert\le\Delta\theta_{\max}$.
 # 4. Start BO from the kicks proposed by one RL step instead of $\theta=0$ (warm-started BO).
+
+# %% [markdown]
+# ### 9.8 Comparison for the strong quadrupole
+#
+# The same comparison for the strong-quadrupole scenario of Section 7.5 ($k \in [5, 7]$ m$^{-1}$ with three times larger
+# kick limits). The linear policies are the feedback from the wrong model ($k_0 = 0$), the feedback from the correct
+# model ($k_\mathrm{ref} = 6$ $m^{-1}$), and the best checkpoints of the two RL runs with the training seed `SEED`
+# (Section 7.5). The response-matrix method measures the response in every episode, so it does not depend on a model.
+# BO searches the larger kick box of $\pm 12$ mrad.
+#
+# Things to look for:
+#
+# - The response-matrix method does not use a model of the optics: it still needs exactly five measurements and
+#   corrects the orbit down to numerical round-off.
+# - BO does not use a model either, but it becomes much harder: the kick box is three times larger, and the objective
+#   is a narrow, elongated valley because the response matrix is nearly singular. Many episodes do not reach the
+#   target within the 35 measurements.
+# - The feedback from the wrong model fails in every episode (the orbit error grows until the kicks hit their limits),
+#   while RL works without any model. With prior knowledge from the correct model, the fixed feedback needs fewer
+#   measurements than RL, but more than the response-matrix method, because it is exact only at $k = k_\mathrm{ref}$.
+
+# %%
+strong_comparison_traces = run_comparison(
+    STRONG_LATTICE,
+    {
+        "W0 from the wrong model (k0 = 0)": wrong_policy,
+        f"W0 from the correct model (k_ref = {STRONG_K_REF})": correct_policy,
+        "RL from W = 0": strong_run_for_seed("zero").best_policy,
+        "RL from the wrong W0": strong_run_for_seed("nominal").best_policy,
+    },
+    BO_EPISODES,
+    COMPARISON_SEED + 1,
+)
+print(f"Strong quadrupole, comparison over {BO_EPISODES} identical episodes:")
+print_comparison(strong_comparison_traces)
+plot_comparison(strong_comparison_traces, title_suffix=", strong k")
