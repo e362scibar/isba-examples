@@ -34,7 +34,7 @@ The original materials were prepared for the 2024 lecture and are now being refr
   - Infers the self-discharge rate with a Poisson likelihood and a conjugate Gamma prior, and derives the negative binomial predictive distribution of the hourly and cumulative counts (conditioning on the rate before integrating it out).
   - Detects the anomaly before the tube replacement by comparing the counts with the prediction from 24 hours before, and chooses the alarm threshold from the false alarms in a normal reference period.
 - [orbit_corr_rl.ipynb](./orbit_corr_rl.ipynb): new in 2026; a reinforcement learning example of two-corrector orbit correction (see [New 2026 Notebooks](#new-2026-notebooks)).
-- [diff_sim_1.ipynb](./diff_sim_1.ipynb)
+- [diff_sim_1.ipynb](./diff_sim_1.ipynb): new in 2026; a differentiable-simulation example of Twiss matching with four thin-lens quadrupoles in JAX, comparing the number of simulation calls for Nelder-Mead and BFGS with finite-difference and automatic gradients (see [New 2026 Notebooks](#new-2026-notebooks)).
 
 ## New 2026 Notebooks
 

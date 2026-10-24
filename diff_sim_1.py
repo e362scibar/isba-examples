@@ -274,7 +274,6 @@ CONVERGED_LOSS = 1.0e-12
 DUPLICATE_TOL = 1.0e-6  # [1/m]
 
 
-
 def distinct_solutions(k_final, loss_final):
     """Converged, de-duplicated solutions sorted by sum k^2, and the number of converged starts."""
     converged = np.asarray(jnp.isfinite(loss_final) & (loss_final < CONVERGED_LOSS))
@@ -656,8 +655,9 @@ for i, (sol, jac) in enumerate(zip(solutions, jac_exit_all)):
 # %%
 N_MC = 10000
 MC_SEED = 2
-# Common rms of dbeta/beta and dalpha. Keep it well below 1 so that beta*(1 + dbeta/beta) stays positive.
-ERROR_SCALES = jnp.geomspace(1.0e-3, 0.25, 13)
+# Common rms of dbeta/beta and dalpha. The largest value is kept at 0.2 so that 1 + dbeta/beta < 0 (an unphysical
+# negative beta) would need a 5-sigma sample; the expected number of such samples is ~0.01 out of 2 * N_MC draws.
+ERROR_SCALES = jnp.geomspace(1.0e-3, 0.2, 13)
 SCATTER_SCALE = 0.2  # error size used for the scatter plot
 
 unit_samples = jax.random.normal(jax.random.PRNGKey(MC_SEED), (N_MC, 2 * len(PLANES)))
@@ -708,9 +708,11 @@ plt.show()
 #   invariance of the mismatch parameter under linear transport. Choosing a different quadrupole solution cannot
 #   make the matching more robust in terms of $B$; it only redistributes the error between $\Delta\beta/\beta$ and
 #   $\Delta\alpha$ at the exit.
-# - The mean loss follows $\tfrac{1}{2}\sigma^2 \operatorname{tr} H$ up to $\sigma \sim 0.1$. At larger errors the
-#   per-sample scatter shows clear deviations from the quadratic model, i.e. the higher-order terms of $B$ in
-#   $\Delta\beta/\beta$ become significant.
+# - The mean loss follows $\tfrac{1}{2}\sigma^2 \operatorname{tr} H$ over the whole scanned range of $\sigma$.
+#   Individual samples, however, deviate clearly from the quadratic model at $\sigma = 0.2$ (right panel): the
+#   higher-order terms of $B$ in $\Delta\beta/\beta$ are already significant for a single error, but they partly
+#   cancel in the average. A good agreement of the mean therefore does not guarantee that the quadratic model is
+#   accurate for each individual error.
 
 # %% [markdown]
 # ## Comparison over many entrance Twiss sets
@@ -861,8 +863,15 @@ alpha_sq = summary["alpha_x0"] ** 2 + summary["alpha_y0"] ** 2
 alpha_line = np.linspace(0.0, float(alpha_sq.max()), 2)
 ax.plot(alpha_line, 4.0 + alpha_line, color=COLOR_MUTED, linewidth=2.0, label=r"analytic: $4 + \alpha_x^2 + \alpha_y^2$")
 ax.plot(alpha_sq, summary["tr_H"], "o", markersize=8, color=COLOR_X, label="jax.hessian")
-for c in cases:
-    ax.annotate(str(c), (alpha_sq[c], summary["tr_H"][c]), textcoords="offset points", xytext=(5, -10))
+# Cycle the label positions in order of alpha^2 so that labels of neighboring points do not overlap
+LABEL_OFFSETS = ((6, -12), (-12, 4), (4, 6))
+for rank, c in enumerate(np.argsort(alpha_sq.to_numpy())):
+    ax.annotate(
+        str(c),
+        (alpha_sq[c], summary["tr_H"][c]),
+        textcoords="offset points",
+        xytext=LABEL_OFFSETS[rank % len(LABEL_OFFSETS)],
+    )
 ax.set_xlabel(r"entrance $\alpha_x^2 + \alpha_y^2$")
 ax.set_ylabel(r"loss sensitivity tr $H$")
 ax.set_title("Sensitivity to entrance Twiss errors")
